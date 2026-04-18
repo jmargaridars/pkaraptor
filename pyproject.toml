@@ -1,0 +1,54 @@
+[project]
+name = "pkaraptor"
+version = "0.1.1"
+description = "Protein pKa and environment analysis with an interactive HTML dashboard"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Joana Ribeiro da Silva" }]
+license = { file = "LICENSE" }
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "mdtraj",
+  "plotly",
+  "propka",
+  "openmm",
+  "pdbfixer",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff",
+  "black",
+  "pytest",
+]
+
+[project.scripts]
+pkaraptor = "pkaraptor.analysis_cli:main"
+pkaraptor-dashboard = "pkaraptor.dashboard_cli:main"
+pkaraptor-apply-json = "pkaraptor.apply_json:main"
+pkaraptor-protonate = "pkaraptor.protonate:main"
+
+[project.urls]
+Homepage = "https://github.com/jmargaridars/pkaraptor"
+Source = "https://github.com/jmargaridars/pkaraptor"
+Issues = "https://github.com/jmargaridars/pkaraptor/issues"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]

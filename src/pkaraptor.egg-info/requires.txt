@@ -1,0 +1,12 @@
+numpy
+pandas
+mdtraj
+plotly
+propka
+openmm
+pdbfixer
+
+[dev]
+ruff
+black
+pytest

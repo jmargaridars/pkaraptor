@@ -1,0 +1,293 @@
+<p align="center">
+  <img src="src/assets/pkaraptor-logo.png" alt="pKaRaptor logo" width="500">
+</p>
+
+
+<h1>pKaRaptor</h1>
+
+
+<p><strong>pKaRaptor</strong> is a Python toolkit for the analysis of protein protonation states and residue-level physicochemical environments, with results presented through an interactive HTML dashboard.</p>
+
+
+<p>The package is intended for structure-based exploration of ionizable residues and their local environments, supporting the inspection of protonation-related features in proteins. It was developed to facilitate the interpretation of pKa-relevant structural descriptors in a practical and accessible format for research workflows.</p>
+
+
+<h2>Overview</h2>
+
+
+<p>Protonation states play an important role in protein structure, stability, dynamics, and function. pKaRaptor was developed as a lightweight toolkit to help researchers inspect protein structures with a focus on ionizable residues and their surrounding physicochemical environments.</p>
+
+
+<p>The package combines command-line workflows with an interactive dashboard, allowing users to move from structure processing to exploratory analysis in a reproducible and accessible way.</p>
+
+
+<h2>Features</h2>
+
+
+<ul>
+  <li>Analysis of protein protonation states and residue-level physicochemical environments from PDB structures</li>
+  <li>Integration of multiple pKa sources, including local and external predictions</li>
+  <li>Support for membrane-aware annotation through OPM/PPM-oriented structures</li>
+  <li>Interactive HTML dashboard for visual exploration of results</li>
+  <li>Export of residue selections from the dashboard in JSON format</li>
+  <li>Utilities to apply residue-name selections to structures</li>
+  <li>Protonation workflows using OpenMM templates</li>
+</ul>
+
+
+<h2>Installation</h2>
+
+
+<h3>Install from PyPI</h3>
+
+
+<pre><code>pip install pkaraptor</code></pre>
+
+
+<h3>Create and activate a dedicated environment (recommended)</h3>
+
+
+<p>Using <code>conda</code>:</p>
+
+
+<pre><code>conda create -n pkaraptor python=3.10
+conda activate pkaraptor
+pip install pkaraptor</code></pre>
+
+
+<p>Using <code>venv</code>:</p>
+
+
+<pre><code>python -m venv pkaraptor-env
+source pkaraptor-env/bin/activate
+pip install pkaraptor</code></pre>
+
+
+<h2>Installation from source</h2>
+
+
+<pre><code>git clone https://github.com/jmargaridars/pkaraptor.git
+cd pkaraptor
+pip install -e .</code></pre>
+
+
+<h2>Requirements</h2>
+
+
+<ul>
+  <li>Python 3.10 or later</li>
+</ul>
+
+
+<h2>Command-line tools</h2>
+
+
+<p>After installation, the following command-line tools should be available:</p>
+
+
+<pre><code>pkaraptor
+pkaraptor-dashboard
+pkaraptor-apply-json
+pkaraptor-protonate</code></pre>
+
+
+<h2>Main analysis</h2>
+
+
+<p>The main <code>pkaraptor</code> command generates a protonation and environment analysis CSV from a PDB structure using pKa sources and environment descriptors.</p>
+
+
+<pre><code>pkaraptor --pdb input.pdb</code></pre>
+
+
+<p>To inspect all available options:</p>
+
+
+<pre><code>pkaraptor -h</code></pre>
+
+
+<h3>Main options</h3>
+
+
+<ul>
+  <li><code>--pdb</code> input PDB file</li>
+  <li><code>--ph</code> pH at which protonation fractions are computed</li>
+  <li><code>--out</code> output CSV file name</li>
+  <li><code>--no-propka</code> disable local PROPKA execution</li>
+  <li><code>--pypka-csv</code> PyPka server CSV input</li>
+  <li><code>--deepka-csv</code> DeepKa server CSV input</li>
+  <li><code>--opm-id</code> optional OPM identifier for downstream visualization</li>
+  <li><code>--opm-zmin</code> lower Z boundary of membrane slab in Angstrom</li>
+  <li><code>--opm-zmax</code> upper Z boundary of membrane slab in Angstrom</li>
+  <li><code>--opm-pdb</code> oriented PDB from PPM/OPM for environment feature calculation</li>
+  <li><code>--opm-residues</code> legacy residue ranges without chain identifiers</li>
+  <li><code>--opm-embedded</code> chain-aware embedded residues, repeatable by chain</li>
+</ul>
+
+
+<h3>Example usage</h3>
+
+
+<p>Basic analysis:</p>
+
+
+<pre><code>pkaraptor --pdb protein.pdb</code></pre>
+
+
+<p>Analysis at a defined pH with a custom output file:</p>
+
+
+<pre><code>pkaraptor --pdb protein.pdb --ph 7.4 --out protonation_environment_analysis.csv</code></pre>
+
+
+<p>Analysis using external pKa predictions:</p>
+
+
+<pre><code>pkaraptor --pdb protein.pdb --pypka-csv pypka_results.csv --deepka-csv deepka_results.csv</code></pre>
+
+
+<p>Membrane-aware analysis using an OPM-oriented structure:</p>
+
+
+<pre><code>pkaraptor --pdb protein.pdb --opm-pdb protein_opm.pdb --opm-zmin -15 --opm-zmax 15</code></pre>
+
+
+<p>Chain-aware membrane embedded residues:</p>
+
+
+<pre><code>pkaraptor --pdb protein.pdb --opm-embedded "A:48-66,69,426" --opm-embedded "B:48-66,69,426,461"</code></pre>
+
+
+<h2>Dashboard generation</h2>
+
+
+<p>The <code>pkaraptor-dashboard</code> command builds an interactive protonation dashboard HTML from a PDB structure and a CSV file produced by <code>pkaraptor</code>.</p>
+
+
+<pre><code>pkaraptor-dashboard --pdb protein.pdb --csv protonation_environment_analysis.csv --out dashboard.html</code></pre>
+
+
+<p>To inspect all available options:</p>
+
+
+<pre><code>pkaraptor-dashboard -h</code></pre>
+
+
+<h3>Dashboard options</h3>
+
+
+<ul>
+  <li><code>--pdb</code> input PDB file</li>
+  <li><code>--csv</code> CSV file produced by <code>pkaraptor</code></li>
+  <li><code>--ph</code> pH used for the analysis, displayed in the dashboard title</li>
+  <li><code>--out</code> output HTML file</li>
+</ul>
+
+
+<h2>Apply dashboard selections to a PDB</h2>
+
+
+<p>The <code>pkaraptor-apply-json</code> command applies residue-name selections exported from the dashboard to a PDB by renaming residue names.</p>
+
+
+<pre><code>pkaraptor-apply-json --json selections.json --pdb protein.pdb --out renamed_structure.pdb</code></pre>
+
+
+<p>To inspect all available options:</p>
+
+
+<pre><code>pkaraptor-apply-json -h</code></pre>
+
+
+<h3>Apply-json options</h3>
+
+
+<ul>
+  <li><code>--json</code> selections JSON exported from the dashboard</li>
+  <li><code>--pdb</code> input PDB file, overriding the JSON <code>pdb</code> field if provided</li>
+  <li><code>--out</code> output protonated or renamed PDB file</li>
+  <li><code>--no-validate-allowed</code> disable validation that <code>selected_resname</code> is present in <code>allowed_resnames</code></li>
+</ul>
+
+
+<h2>Protonate a structure from dashboard selections</h2>
+
+
+<p>The <code>pkaraptor-protonate</code> command applies selections exported from the dashboard to a PDB and adds hydrogens using OpenMM templates.</p>
+
+
+<pre><code>pkaraptor-protonate --json selections.json --pdb protein.pdb --out protonated_structure.pdb</code></pre>
+
+
+<p>To inspect all available options:</p>
+
+
+<pre><code>pkaraptor-protonate -h</code></pre>
+
+
+<h3>Protonation options</h3>
+
+
+<ul>
+  <li><code>--json</code> selections JSON exported from the dashboard</li>
+  <li><code>--pdb</code> input PDB file, overriding the JSON <code>pdb</code> field if provided</li>
+  <li><code>--out</code> output PDB file with hydrogens</li>
+  <li><code>--strip-ppm</code> remove PPM/OPM dummy atoms (<code>DUM</code>/<code>DU</code>)</li>
+  <li><code>--no-validate-allowed</code> do not validate that <code>selected_resname</code> is present in <code>allowed_resnames</code></li>
+  <li><code>--ph</code> pH used by OpenMM to place hydrogens</li>
+  <li><code>--forcefield</code> OpenMM ForceField XML file, repeatable; default is <code>amber14-all.xml</code></li>
+  <li><code>--remove-heterogens</code> remove heterogens before hydrogenation</li>
+  <li><code>--keep-water</code> when removing heterogens, keep water molecules</li>
+</ul>
+
+
+<h2>Typical workflow</h2>
+
+
+<p>A typical workflow may involve running <code>pkaraptor</code> on a PDB structure to generate a protonation environment analysis CSV, building an interactive dashboard with <code>pkaraptor-dashboard</code>, exporting residue selections from the dashboard as JSON, applying renamed residue selections with <code>pkaraptor-apply-json</code>, and generating a hydrogenated structure with <code>pkaraptor-protonate</code>.</p>
+
+
+<h2>Output</h2>
+
+
+<p>Depending on the selected workflow and inputs, pKaRaptor can generate outputs such as protonation environment analysis CSV files, interactive HTML dashboards, JSON files containing residue selections exported from the dashboard, renamed PDB structures, and protonated PDB structures with hydrogens added through OpenMM.</p>
+
+
+<h2>Use cases</h2>
+
+
+<p>pKaRaptor may be useful for exploratory analysis of ionizable residues in protein structures, inspection of local environments around titratable sites, comparison of protonation-related predictions from different sources, investigation of pH-dependent structural hypotheses, membrane protein analysis with OPM-informed context, preparation and interpretation steps prior to molecular simulation, and educational or methodological demonstrations related to protein protonation analysis.</p>
+
+
+<h2>Repository structure</h2>
+
+
+<p>A typical repository structure includes the files <code>LICENSE</code>, <code>README.md</code>, and <code>pyproject.toml</code>, together with the <code>src/</code> directory containing the package source code and, when distributions are built locally, a <code>dist/</code> directory.</p>
+
+
+<h2>Citation</h2>
+
+
+<p>If you use <strong>pKaRaptor</strong> in academic work, please cite the software repository or the corresponding PyPI release.</p>
+
+
+<p>A formal software citation will be added once available.</p>
+
+
+<h2>Authorship, Contributions, and Maintenance</h2>
+
+
+<p>Joana Ribeiro da Silva is the author and developer of pKaRaptor. The PyPI maintainers are Joana Ribeiro da Silva, Pedro Alexandrino Fernandes, and Pedro Ferreira. Acknowledged contributions include academic supervision and project support from Pedro Alexandrino Fernandes, and testing, feedback, and scientific discussion from Pedro Ferreira.</p>
+
+
+<h2>Contributing</h2>
+
+
+<p>Contributions, suggestions, and bug reports are welcome. Please use the GitHub issue tracker to report problems or propose improvements.</p>
+
+
+<h2>License</h2>
+
+
+<p>This project is distributed under the BSD 3-Clause License. See the <code>LICENSE</code> file for details.</p>
+

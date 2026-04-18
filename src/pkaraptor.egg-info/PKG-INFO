@@ -1,0 +1,64 @@
+Metadata-Version: 2.4
+Name: pkaraptor
+Version: 0.1.0
+Summary: Protein pKa and environment analysis with an interactive HTML dashboard
+Author: Joana Ribeiro da Silva
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: mdtraj
+Requires-Dist: plotly
+Requires-Dist: propka
+Requires-Dist: openmm
+Requires-Dist: pdbfixer
+Provides-Extra: dev
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: black; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+
+protdash
+
+protdash is a lightweight Python toolkit for the analysis of protonation states and local environment features of protein residues.
+
+
+Installation
+
+1. Clone the repository
+
+git clone https://github.com/(placeholder)/protdash.git
+cd protdash
+
+
+2. Create and activate a Python environment (recommended)
+
+Using conda:
+
+conda create -n protdash python=3.10
+conda activate protdash
+
+Or using venv:
+
+python -m venv protdash-env
+source protdash-env/bin/activate
+
+
+3. Install dependencies and the package
+
+From the repository root (where pyproject.toml is located):
+
+pip install -e .
+
+After installation, the following commands should be available:
+
+protdash
+protdash-dashboard
+
+
+
+Cite Us
+
+If you use this toolkit in published work, please cite:
+
+[Add reference here]
