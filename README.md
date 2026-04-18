@@ -1,7 +1,6 @@
 <p align="center">
-  <img src="src/assets/pkaraptor-logo.png" alt="pKaRaptor logo" width="500">
+  <img src="https://raw.githubusercontent.com/jmargaridars/pkaraptor/main/src/assets/pkaraptor-logo.png" alt="pKaRaptor logo" width="500">
 </p>
-
 
 <h1>pKaRaptor</h1>
 

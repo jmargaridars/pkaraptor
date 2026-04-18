@@ -1,11 +1,11 @@
 [project]
 name = "pkaraptor"
-version = "0.1.1"
+version = "0.1.2"
 description = "Protein pKa and environment analysis with an interactive HTML dashboard"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Joana Ribeiro da Silva" }]
-license = { file = "LICENSE" }
+license = "BSD-3-Clause"
 
 dependencies = [
   "numpy",
