@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20111135.svg)](https://doi.org/10.5281/zenodo.20111135)
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/jmargaridars/pkaraptor/main/src/assets/pkaraptor-logo.png" alt="pKaRaptor logo" width="500">
 </p>

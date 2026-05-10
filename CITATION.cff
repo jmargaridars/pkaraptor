@@ -1,0 +1,25 @@
+
+cff-version: 1.2.0
+
+title: "pKa-Raptor"
+
+message: "If you use pKa-Raptor, please cite it using the metadata from this file."
+
+type: software
+
+authors:
+
+  - family-names: "Ribeiro da Silva"
+
+    given-names: "Joana"
+
+version: "0.1.2"
+
+date-released: "2026-05-10"
+
+doi: "10.5281/zenodo.20111135"
+
+url: "https://github.com/jmargaridars/pkaraptor"
+
+repository-code: "https://github.com/jmargaridars/pkaraptor"
+
