@@ -1,11 +1,35 @@
 [project]
 name = "pkaraptor"
-version = "0.1.2"
-description = "Protein pKa and environment analysis with an interactive HTML dashboard"
+version = "0.2.0"
+description = "Interactive integration of protein pKa predictions and residue-level structural environments"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Joana Ribeiro da Silva" }]
+authors = [
+  { name = "Joana Ribeiro da Silva" },
+  { name = "Pedro Ferreira" },
+  { name = "Pedro Alexandrino Fernandes" },
+]
 license = "BSD-3-Clause"
+keywords = [
+  "bioinformatics",
+  "computational-biochemistry",
+  "molecular-dynamics",
+  "pka",
+  "protein-protonation",
+  "protein-structure",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Education",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering :: Chemistry",
+]
 
 dependencies = [
   "numpy",
@@ -25,7 +49,10 @@ dev = [
 ]
 
 [project.scripts]
-pkaraptor = "pkaraptor.analysis_cli:main"
+pkaraptor = "pkaraptor.cli:main"
+pkaraptor-analysis = "pkaraptor.analysis_cli:main"
+pkaraptor-run = "pkaraptor.workflow:run_main"
+pkaraptor-finalize = "pkaraptor.workflow:finalize_main"
 pkaraptor-dashboard = "pkaraptor.dashboard_cli:main"
 pkaraptor-apply-json = "pkaraptor.apply_json:main"
 pkaraptor-protonate = "pkaraptor.protonate:main"
@@ -34,6 +61,7 @@ pkaraptor-protonate = "pkaraptor.protonate:main"
 Homepage = "https://github.com/jmargaridars/pkaraptor"
 Source = "https://github.com/jmargaridars/pkaraptor"
 Issues = "https://github.com/jmargaridars/pkaraptor/issues"
+Changelog = "https://github.com/jmargaridars/pkaraptor/blob/main/CHANGELOG.md"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
@@ -52,3 +80,6 @@ target-version = "py310"
 [tool.black]
 line-length = 100
 target-version = ["py310"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

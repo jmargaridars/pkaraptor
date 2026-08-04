@@ -1,5 +1,0 @@
-[console_scripts]
-pkaraptor = pkaraptor.analysis_cli:main
-pkaraptor-apply-json = pkaraptor.apply_json:main
-pkaraptor-dashboard = pkaraptor.dashboard_cli:main
-pkaraptor-protonate = pkaraptor.protonate:main

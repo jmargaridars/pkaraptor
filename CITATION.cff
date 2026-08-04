@@ -1,9 +1,9 @@
 
 cff-version: 1.2.0
 
-title: "pKa-Raptor"
+title: "pKaRaptor"
 
-message: "If you use pKa-Raptor, please cite it using the metadata from this file."
+message: "If you use pKaRaptor, please cite it using the metadata from this file."
 
 type: software
 
@@ -13,13 +13,20 @@ authors:
 
     given-names: "Joana"
 
-version: "0.1.2"
+  - family-names: "Ferreira"
 
-date-released: "2026-05-10"
+    given-names: "Pedro"
 
-doi: "10.5281/zenodo.20111135"
+  - family-names: "Alexandrino Fernandes"
+
+    given-names: "Pedro"
+
+version: "0.2.0"
+
+date-released: "2026-08-04"
+
+doi: "10.5281/zenodo.20111134"
 
 url: "https://github.com/jmargaridars/pkaraptor"
 
 repository-code: "https://github.com/jmargaridars/pkaraptor"
-

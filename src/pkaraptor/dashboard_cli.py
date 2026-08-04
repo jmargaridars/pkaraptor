@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+import webbrowser
 
 import pandas as pd
 
@@ -27,6 +28,11 @@ def main() -> None:
         default="protonation_dashboard.html",
         help="output html file",
     )
+    parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Generate the dashboard without opening a browser.",
+    )
 
     args = parser.parse_args()
 
@@ -35,3 +41,9 @@ def main() -> None:
     out_path = Path(args.out)
     out_path.write_text(html_doc, encoding="utf-8")
     print(f"Written HTML dashboard: {out_path}")
+    if not args.no_open:
+        try:
+            if not webbrowser.open(out_path.resolve().as_uri(), new=2):
+                print(f"Browser did not open; open manually: {out_path.resolve()}")
+        except Exception as exc:
+            print(f"Browser did not open ({exc}); open manually: {out_path.resolve()}")
