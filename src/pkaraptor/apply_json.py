@@ -40,7 +40,8 @@ def set_resname_fixed_width(line: str, new_resname: str) -> str:
 
 def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str, int, str], str]:
     schema = str(doc.get("schema", "") or "")
-    if schema and schema != "pkaraptor.resname_selection.v1":
+    supported_schemas = {"pkaraptor.resname_selection.v1", "pkaraptor.resname_selection.v2"}
+    if schema and schema not in supported_schemas:
         raise ValueError(f"Unsupported JSON schema: {schema}")
 
     selections = doc.get("selections", [])
@@ -48,6 +49,7 @@ def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str
         raise ValueError("JSON must contain 'selections' as a list")
 
     mapping: Dict[Tuple[str, int, str], str] = {}
+    unassigned: list[str] = []
 
     for i, item in enumerate(selections):
         if not isinstance(item, dict):
@@ -65,6 +67,8 @@ def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str
 
         selected = str(item.get("selected_resname", "") or "").strip().upper()
         if not selected:
+            if schema == "pkaraptor.resname_selection.v2":
+                unassigned.append(str(item.get("Residue", f"{chain}:{resnum}")))
             continue
 
         if validate_allowed:
@@ -78,6 +82,13 @@ def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str
                     )
 
         mapping[(chain, resnum, "")] = selected
+
+    if unassigned:
+        preview = ", ".join(unassigned[:8])
+        suffix = "" if len(unassigned) <= 8 else f" … and {len(unassigned) - 8} more"
+        raise ValueError(
+            f"Cannot apply an incomplete decision file: {len(unassigned)} residue(s) are unassigned ({preview}{suffix})."
+        )
 
     return mapping
 

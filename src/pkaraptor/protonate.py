@@ -107,7 +107,8 @@ def strip_ppm_dummy_atoms(pdb_in: Path, pdb_out: Path) -> None:
 
 def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str, int], str]:
     schema = str(doc.get("schema", "") or "")
-    if schema and schema != "pkaraptor.resname_selection.v1":
+    supported_schemas = {"pkaraptor.resname_selection.v1", "pkaraptor.resname_selection.v2"}
+    if schema and schema not in supported_schemas:
         raise ValueError(f"Unsupported JSON schema: {schema}")
 
     selections = doc.get("selections", [])
@@ -115,6 +116,7 @@ def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str
         raise ValueError("JSON must contain 'selections' as a list")
 
     mapping: Dict[Tuple[str, int], str] = {}
+    unassigned: list[str] = []
     for i, item in enumerate(selections):
         if not isinstance(item, dict):
             continue
@@ -131,6 +133,8 @@ def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str
 
         selected = str(item.get("selected_resname", "") or "").strip().upper()
         if not selected:
+            if schema == "pkaraptor.resname_selection.v2":
+                unassigned.append(str(item.get("Residue", f"{chain}:{resnum}")))
             continue
 
         if validate_allowed:
@@ -144,6 +148,13 @@ def build_mapping(doc: Dict[str, Any], validate_allowed: bool) -> Dict[Tuple[str
                     )
 
         mapping[(chain, resnum)] = selected
+
+    if unassigned:
+        preview = ", ".join(unassigned[:8])
+        suffix = "" if len(unassigned) <= 8 else f" … and {len(unassigned) - 8} more"
+        raise ValueError(
+            f"Cannot protonate from an incomplete decision file: {len(unassigned)} residue(s) are unassigned ({preview}{suffix})."
+        )
 
     return mapping
 
@@ -210,6 +221,9 @@ def _canonical_and_variant(selected: str, current_name: str) -> Tuple[str, str |
     if sel in VARIANT_TABLE:
         return sel, None
 
+    if sel == "CYX":
+        return "CYS", None
+
     for canon, variants in VARIANT_TABLE.items():
         if sel in variants:
             return canon, sel
@@ -233,6 +247,14 @@ def openmm_add_hydrogens_from_topology(
             "OpenMM is not available. Install it with:\n\n"
             "  python -m pip install openmm\n\n"
             f"Import error: {e}"
+        )
+
+    unsupported = sorted({state for state in mapping.values() if state in {"CYM", "LYN", "ARN", "TYM"}})
+    if unsupported:
+        raise ValueError(
+            "The selected force-field hydrogenation route does not support these explicit states: "
+            + ", ".join(unsupported)
+            + ". Choose canonical states or provide a separately validated preparation route for those residues."
         )
 
     pdb = PDBFile(str(pdb_in))
@@ -281,7 +303,18 @@ def openmm_add_hydrogens_from_topology(
         f"variants={dict(applied_variants)}"
     )
 
-    modeller.addHydrogens(ff, pH=float(ph_for_openmm), variants=variants_list)
+    try:
+        modeller.addHydrogens(ff, pH=float(ph_for_openmm), variants=variants_list)
+    except ValueError as exc:
+        message = str(exc)
+        if "externally bonded atoms" in message:
+            raise ValueError(
+                "OpenMM found a protein residue covalently linked to a heterogen, glycan, or other "
+                "unsupported group. Rerun finalize with --remove-heterogens for a protein-only output, "
+                "or use a force-field and preparation workflow that explicitly supports the linked group. "
+                f"Original OpenMM error: {message}"
+            ) from exc
+        raise
 
     with pdb_out.open("w", encoding="utf-8") as f:
         PDBFile.writeFile(modeller.topology, modeller.positions, f, keepIds=True)
@@ -435,7 +468,7 @@ def enforce_histidines_from_resname(
     print(f"[pkaraptor] HIS report written: {report_csv}")
 
 
-def main() -> None:
+def main(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Apply pkaraptor selections (JSON) to a PDB and add hydrogens using OpenMM templates."
     )
@@ -461,7 +494,7 @@ def main() -> None:
     parser.add_argument("--remove-heterogens", action="store_true", help="Remove heterogens before hydrogenation.")
     parser.add_argument("--keep-water", action="store_true", help="When removing heterogens, keep water molecules.")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     doc = load_json(Path(args.json))
     pdb_from_json = str(doc.get("pdb", "") or "").strip()

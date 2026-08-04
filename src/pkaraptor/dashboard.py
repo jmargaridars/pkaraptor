@@ -81,6 +81,24 @@ def _safe_int(x):
         return None
 
 
+def _clean_text(x, default: str = "") -> str:
+    if x is None or (not isinstance(x, (list, dict)) and pd.isna(x)):
+        return default
+    text = str(x).strip()
+    return default if text.lower() in {"", "nan", "none"} else text
+
+
+def _normalize_sasa_exposure(value) -> str:
+    """Use SASA-specific wording without implying that accessible surface contacts water."""
+    text = _clean_text(value)
+    aliases = {
+        "solvent-exposed": "SASA-exposed",
+        "partially exposed": "partially SASA-exposed",
+        "buried": "SASA-buried",
+    }
+    return aliases.get(text.lower(), text)
+
+
 def _extract_resnum_from_label(label: str) -> int:
     digits = "".join(ch for ch in str(label) if ch.isdigit())
     return int(digits) if digits else 0
@@ -99,6 +117,8 @@ def prepare_df_for_dashboard(df: pd.DataFrame) -> pd.DataFrame:
 
     if "Protonation_state" in out.columns:
         out["Protonation_state"] = out["Protonation_state"].replace({"Ambiguous": "Mixed"})
+    if "Exposure" in out.columns:
+        out["Exposure"] = out["Exposure"].map(_normalize_sasa_exposure)
 
     for c in (
         "propka_pKa",
@@ -176,114 +196,84 @@ def prepare_df_for_dashboard(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_plot(df: pd.DataFrame, ph: float) -> str:
-    x_resnum = df["resnum"].astype(int) if "resnum" in df.columns else pd.Series(range(len(df)), index=df.index)
-    x_label = df["Residue"].astype(str) if "Residue" in df.columns else x_resnum.astype(str)
-
-    y = df["Average_pKa"] if "Average_pKa" in df.columns else df.get(
-        "Effective_pKa", pd.Series(np.nan, index=df.index)
+    work = df.copy()
+    work["_chain"] = work.get("chain", pd.Series("", index=work.index)).fillna("").astype(str)
+    work["_chain"] = work["_chain"].replace({"": "(blank)"})
+    work["_resnum"] = pd.to_numeric(
+        work.get("resnum", pd.Series(range(len(work)), index=work.index)), errors="coerce"
     )
-    y = pd.to_numeric(y, errors="coerce")
-
-    if "SASA_frac" in df.columns:
-        sizes = (df["SASA_frac"].fillna(0.3).clip(0, 1) * 22 + 10).astype(float)
-    else:
-        sizes = pd.Series(14.0, index=df.index)
-
-    if "Protonation_fraction" in df.columns:
-        frac = df["Protonation_fraction"].fillna(0.5).astype(float).clip(0, 1)
-    else:
-        frac = pd.Series(0.5, index=df.index)
-
-    disulfide = df.get("Disulfide_bridge", pd.Series(False, index=df.index)).fillna(False).astype(bool)
-    in_mem = df.get("In_membrane_slab", pd.Series(False, index=df.index)).fillna(False).astype(bool)
-
-    symbols = np.where(disulfide.values, "x", np.where(in_mem.values, "diamond", "circle"))
-    disulfide_note = np.where(disulfide.values, "⚑ disulfide flagged", "")
-
-    line_colors = np.where(in_mem.values, "rgba(56,189,248,0.85)", "rgba(15,23,42,0.35)")
-    line_widths = np.where(in_mem.values, 2.0, 1.0)
-
-    custom = np.stack(
-        [
-            x_label.values,
-            df.get("propka_pKa", pd.Series(np.nan, index=df.index)).values,
-            df.get("pypka_pKa", pd.Series(np.nan, index=df.index)).values,
-            df.get("deepka_pKa", pd.Series(np.nan, index=df.index)).values,
-            df.get("Average_pKa", pd.Series(np.nan, index=df.index)).values,
-            df.get("Protonation_state", pd.Series("", index=df.index)).astype(str).values,
-            df.get("Exposure", pd.Series("", index=df.index)).astype(str).values,
-            df.get("HBond_shell_donors_count", pd.Series(np.nan, index=df.index)).values,
-            df.get("HBond_shell_acceptors_count", pd.Series(np.nan, index=df.index)).values,
-            disulfide_note,
-            in_mem.values.astype(bool),
-        ],
-        axis=1,
+    work["_avg"] = pd.to_numeric(
+        work.get("Average_pKa", work.get("Effective_pKa", pd.Series(np.nan, index=work.index))),
+        errors="coerce",
     )
+    work = work.dropna(subset=["_resnum"])
+    chains = sorted(work["_chain"].unique().tolist())
+    observed_numbers = sorted(work["_resnum"].astype(int).unique().tolist())
+    residue_numbers = (
+        list(range(observed_numbers[0], observed_numbers[-1] + 1)) if observed_numbers else []
+    )
+    chain_index = {chain: i for i, chain in enumerate(chains)}
+    residue_index = {resnum: i for i, resnum in enumerate(residue_numbers)}
+    z = [[None for _ in residue_numbers] for _ in chains]
+    custom = [[["", None, "", "No"] for _ in residue_numbers] for _ in chains]
 
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=x_resnum.tolist(),
-            y=y.tolist(),
-            mode="markers",
-            marker=dict(
-                size=sizes.tolist(),
-                color=frac.tolist(),
-                colorscale=[[0.0, "#ef4444"], [0.5, "#facc15"], [1.0, "#22c55e"]],
-                cmin=0,
-                cmax=1,
-                symbol=symbols.tolist(),
-                line=dict(width=line_widths.tolist(), color=line_colors.tolist()),
-                opacity=0.95,
-                colorbar=dict(title="f(prot)", thickness=16, len=0.72, x=1.04),
-            ),
+    for _, row in work.iterrows():
+        chain = str(row["_chain"])
+        resnum = int(row["_resnum"])
+        i = chain_index[chain]
+        j = residue_index[resnum]
+        avg = row["_avg"]
+        if pd.notna(avg):
+            z[i][j] = float(avg) - float(ph)
+        custom[i][j] = [
+            str(row.get("Residue", f"{chain}:{resnum}")),
+            None if pd.isna(avg) else float(avg),
+            str(row.get("Exposure", "") or ""),
+            "Yes" if bool(row.get("In_membrane_slab", False)) else "No",
+        ]
+
+    fig = go.Figure(
+        data=go.Heatmap(
+            x=residue_numbers,
+            y=chains,
+            z=z,
             customdata=custom,
+            zmin=-5,
+            zmax=5,
+            zmid=0,
+            colorscale=[[0.0, "#2563eb"], [0.5, "#f8fafc"], [1.0, "#dc2626"]],
+            colorbar=dict(title="Δ(pKa−pH)", thickness=16, len=0.78),
+            xgap=1,
+            ygap=2,
+            hoverongaps=False,
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
-                "resnum: %{x}<br>"
-                "pKa (avg): %{y:.2f}<br>"
-                "state: %{customdata[5]}<br>"
-                "exposure: %{customdata[6]}<br>"
-                "membrane: %{customdata[10]}<br>"
-                "HB shell (raw): D %{customdata[7]} · A %{customdata[8]}<br>"
-                "%{customdata[9]}"
+                "Chain: %{y}<br>Residue number: %{x}<br>"
+                "pKa (avg): %{customdata[1]:.2f}<br>"
+                "Δ(pKa−pH): %{z:.2f}<br>"
+                "SASA exposure: %{customdata[2]}<br>"
+                "Membrane-embedded: %{customdata[3]}"
                 "<extra></extra>"
             ),
         )
     )
-
-    fig.add_hline(
-        y=ph,
-        line_width=2,
-        line_dash="dot",
-        line_color="rgba(56,189,248,0.85)",
-        annotation_text=f"pH {ph:.2f}",
-        annotation_position="top left",
-        annotation_font_color="rgba(224,242,254,0.95)",
-    )
-
     fig.update_layout(
-        title=(
-            f"<b>🫧 Protonation Landscape</b><br>"
-            f"<sup>pH {ph:.2f} • size = SASA • color = f(prot) • ◆ = membrane</sup>"
-        ),
+        title=f"<b>Chain-aware pKa − pH heatmap</b><br><sup>Reference pH {ph:.2f} • white = pKa near pH • blank = no value • colour saturates beyond ±5</sup>",
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Inter, Arial, sans-serif", size=13),
-        height=520,
-        margin=dict(l=60, r=40, t=90, b=60),
+        height=max(300, 54 * max(len(chains), 1) + 150),
+        margin=dict(l=70, r=40, t=80, b=55),
         xaxis=dict(
             title="Residue number",
-            showgrid=True,
-            gridcolor="rgba(148,163,184,0.18)",
+            showgrid=False,
             zeroline=False,
         ),
         yaxis=dict(
-            title="pKa (avg)",
-            showgrid=True,
-            gridcolor="rgba(148,163,184,0.18)",
-            zeroline=False,
+            title="Chain",
+            showgrid=False,
+            autorange="reversed",
         ),
     )
 
@@ -386,9 +376,18 @@ def dataframe_to_js(df: pd.DataFrame, ph: float) -> tuple[str, str]:
         color_cb = color_cb_magma_light(frac_for_color)
 
         allowed_resnames = options_map.get(resname, [resname] if resname else [""])
-        default_resname = allowed_resnames[0] if allowed_resnames else ""
-        if resname == "CYS" and disulfide and "CYX" in allowed_resnames:
-            default_resname = "CYX"
+        # Protonation and tautomer assignments must come from an explicit user choice.
+        default_resname = ""
+
+        interactions_raw = r.get("Interaction_diagram_json", "")
+        interactions = []
+        if isinstance(interactions_raw, str) and interactions_raw.strip():
+            try:
+                parsed_interactions = json.loads(interactions_raw)
+                if isinstance(parsed_interactions, list):
+                    interactions = parsed_interactions
+            except (TypeError, ValueError, json.JSONDecodeError):
+                interactions = []
 
         records.append(
             {
@@ -405,7 +404,7 @@ def dataframe_to_js(df: pd.DataFrame, ph: float) -> tuple[str, str]:
                 "Disulfide_partner": str(r.get("Disulfide_partner", "") or ""),
                 "Protonation_fraction": frac_val,
                 "Protonation_state": state,
-                "Exposure": str(r.get("Exposure", "") or ""),
+                "Exposure": _normalize_sasa_exposure(r.get("Exposure", "")),
                 "SASA_frac": sasa_val,
                 "Neighbors_within_5A": str(r.get("Neighbors_within_5A", "")),
                 "neighbor_count": int(neighbor_count),
@@ -413,6 +412,9 @@ def dataframe_to_js(df: pd.DataFrame, ph: float) -> tuple[str, str]:
                 "HBond_shell_acceptors_count": _safe_int(r.get("HBond_shell_acceptors_count", np.nan)) or 0,
                 "HBond_shell_donors": str(r.get("HBond_shell_donors", "")),
                 "HBond_shell_acceptors": str(r.get("HBond_shell_acceptors", "")),
+                "Ionizable_group_atoms": _clean_text(r.get("Ionizable_group_atoms", "")),
+                "Ionizable_group_z_A": _to_float_or_none(r.get("Ionizable_group_z_A", np.nan)),
+                "interactions": interactions,
                 "color_default": color_default,
                 "color_cb": color_cb,
                 "methods_present": methods_present,
@@ -465,8 +467,6 @@ def dataframe_to_js(df: pd.DataFrame, ph: float) -> tuple[str, str]:
 
 def build_dashboard_html(df: pd.DataFrame, pdb_path: str, ph: float) -> str:
     df = prepare_df_for_dashboard(df)
-
-    fig_html = build_plot(df, ph)
 
     pdb_raw = Path(pdb_path).read_text(encoding="utf-8")
     pdb_js_literal = json.dumps(pdb_raw)
@@ -795,6 +795,7 @@ body.theme-light #infoBox .info-min-btn {{
 #infoBox.minimized .info-content {{
   display: none;
 }}
+#infoBox .info-content {{ max-height: 68vh; overflow-y: auto; padding-right: 4px; }}
 .info-grid {{
   display: grid;
   grid-template-columns: auto auto;
@@ -850,6 +851,9 @@ body.theme-light .chip-residue {{
 body.theme-light .plot-shell {{
   background: radial-gradient(circle at top left, rgba(255,255,255,1), rgba(241,245,249,0.96));
 }}
+.titration-empty {{ min-height:220px; display:flex; align-items:center; justify-content:center; color:rgba(148,163,184,0.9); font-size:0.85rem; text-align:center; padding:20px; }}
+.titration-note {{ margin-top:7px; color:rgba(148,163,184,0.9); font-size:0.68rem; line-height:1.4; }}
+body.theme-light .titration-note {{ color:rgba(30,41,59,0.62); }}
 
 .table-tools {{
   display: flex;
@@ -862,7 +866,7 @@ body.theme-light .plot-shell {{
 .search-input {{ flex: 1; position: relative; min-width: 260px; }}
 .search-input input {{
   width: 100%;
-  padding: 7px 10px 7px 28px;
+  padding: 7px 32px 7px 28px;
   border-radius: 999px;
   border: 1px solid rgba(148,163,184,0.5);
   background: rgba(15,23,42,0.9);
@@ -884,6 +888,29 @@ body.theme-light .search-input input {{
   color: rgba(148,163,184,0.9);
 }}
 body.theme-light .search-input span.icon {{ color: rgba(30,41,59,0.65); }}
+.search-clear {{
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: rgba(148,163,184,0.9);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 4px;
+}}
+.search-clear[hidden] {{ display: none; }}
+body.theme-light .search-clear {{ color: rgba(30,41,59,0.65); }}
+.search-count {{
+  color: rgba(148,163,184,0.9);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}}
+body.theme-light .search-count {{ color: rgba(30,41,59,0.65); }}
+.table-policy-note {{ margin:7px 4px 0; color:rgba(148,163,184,0.9); font-size:0.67rem; line-height:1.4; }}
+body.theme-light .table-policy-note {{ color:rgba(30,41,59,0.62); }}
 
 .filter-chips {{
   display: inline-flex;
@@ -1005,6 +1032,25 @@ body.theme-light .fraction-label {{ color: rgba(30,41,59,0.70); }}
   color: rgba(226,232,240,0.92);
 }}
 body.theme-light .small-num {{ color: rgba(15,23,42,0.92); }}
+.membrane-flag {{
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  padding: 2px 7px;
+  border: 1px solid rgba(56,189,248,0.65);
+  border-radius: 999px;
+  background: rgba(14,116,144,0.20);
+  color: #7dd3fc;
+  font-size: 0.66rem;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}}
+body.theme-light .membrane-flag {{
+  border-color: rgba(2,132,199,0.45);
+  background: rgba(14,165,233,0.10);
+  color: #075985;
+}}
 
 .diag-grid {{
   display: grid;
@@ -1196,6 +1242,17 @@ body.theme-light .app-footer {{
 }}
 .footer-left {{ font-weight: 500; }}
 .footer-right {{ font-style: italic; }}
+.interaction-modal {{ position:fixed; inset:0; z-index:10000; background:rgba(2,6,23,.78); display:none; align-items:center; justify-content:center; padding:24px; }}
+.interaction-modal.visible {{ display:flex; }}
+.interaction-dialog {{ width:min(860px,94vw); max-height:90vh; overflow:auto; background:#fff; color:#172033; border-radius:16px; box-shadow:0 24px 80px rgba(0,0,0,.45); }}
+.interaction-header {{ display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid #dbe3ef; }}
+.interaction-actions {{ display:flex; gap:8px; }}
+.interaction-actions button, .interaction-btn {{ border:1px solid #9fb0c7; border-radius:8px; padding:6px 10px; background:#f7faff; color:#183b66; cursor:pointer; font-weight:700; }}
+.interaction-canvas {{ padding:8px 16px 2px; min-height:360px; }}
+.state-map-warning {{ margin:8px 0 2px; padding:9px 12px; border:1px solid #f59e0b; border-radius:10px; background:#fffbeb; color:#78350f; font-size:.76rem; line-height:1.35; }}
+.interaction-note {{ padding:0 20px 18px; color:#53657d; font-size:13px; }}
+.interaction-svg {{ display:block; width:100%; height:auto; min-height:0; }}
+.interaction-node {{ cursor:pointer; }}
 </style>
 </head>
 <body>
@@ -1227,10 +1284,10 @@ body.theme-light .app-footer {{
           <li><b>Palette</b> (top bar): switches between default and colorblind-friendly protonation color mapping.</li>
           <li><b>Diagnostics</b> (top bar): shows or hides the diagnostics panels (method agreement, coverage, atypical pKa).</li>
           <li><b>Theme</b> (top bar): toggles between dark and light display themes.</li>
-          <li><b>Selection</b>: click any residue in the table, plot, or 3D structure to focus it and display its local environment.</li>
+          <li><b>Selection</b>: click any residue in the table or 3D structure to focus it, display its local environment, and update the titration curves.</li>
           <li><b>Reset view</b> (Structure panel): clears the current selection, removes neighbor highlighting, and restores the default camera view.</li>
           <li><b>PPM DUM</b> (Structure panel): toggles display of membrane dummy atoms (when present) as spheres, providing a visual reference for the membrane slab used by OPM/PPM alignment.</li>
-          <li><b>Search</b> (table): filters residues by matching text across residue label, chain, number, protonation state, exposure, neighbors, pKa values, and diagnostics tags.</li>
+          <li><b>Search</b> (table): filters residue identity, chain, number, protonation category, SASA exposure, membrane context, or disulfide status.</li>
           <li><b>State filters</b> (table): restricts the table to residues classified as Protonated, Deprotonated, or Mixed.</li>
           <li><b>Membrane filters</b> (table): restricts the table to residues flagged as membrane-embedded or non-membrane.</li>
 
@@ -1239,9 +1296,10 @@ body.theme-light .app-footer {{
               <li><b>Step 1</b>: choose a residue from the table or click directly on the structure.</li>
               <li><b>Step 2</b>: inspect <b>pKa (Avg.)</b> and compare to the reference <b>pH</b> badge in the header.</li>
               <li><b>Step 3</b>: check <b>Fraction</b> to interpret expected charge state at the reference pH.</li>
-              <li><b>Step 4</b>: examine <b>Exposure</b>, <b>SASA</b> (marker size), and <b>Neighbors</b> to relate pKa shifts to the local microenvironment.</li>
-              <li><b>Step 5</b>: use <b>Method diagnostics</b> to assess uncertainty; low agreement indicates predictions diverge and should be interpreted cautiously.</li>
-              <li><b>Step 6</b>: use <b>Atypical pKa</b> to triage residues with large shifts from canonical intrinsic values for follow-up analysis.</li>
+              <li><b>Step 4</b>: compare the method-specific <b>titration curves</b> and their protonated fractions at the reference pH.</li>
+              <li><b>Step 5</b>: examine <b>SASA exposure</b>, <b>membrane context</b>, and <b>Neighbors</b> to relate pKa shifts to the local microenvironment.</li>
+              <li><b>Step 6</b>: use <b>Method diagnostics</b> to assess uncertainty; low agreement indicates predictions diverge and should be interpreted cautiously.</li>
+              <li><b>Step 7</b>: use <b>Atypical pKa</b> to inspect residues with large shifts from canonical intrinsic values.</li>
             </ul>
           </li>
 
@@ -1261,9 +1319,9 @@ body.theme-light .app-footer {{
               <li><b>pKa (PyPka)</b>: pKa predicted by PyPka (continuum electrostatics-based method).</li>
               <li><b>pKa (DeepKa)</b>: pKa predicted by DeepKa (machine-learning-based method).</li>
               <li><b>pKa (Avg.)</b>: average of available pKa predictions after numeric filtering.</li>
-              <li><b>Set residue</b>: manual residue-name choice for the protonation output JSON (e.g., ASP/ASH, GLU/GLH, HID/HIE/HIP).</li>
+              <li><b>Set residue</b>: a manual residue-state choice for the output JSON. If untouched, non-histidine residues use the declared deprotonated fallback; histidines require an explicit tautomer/state choice. Detected disulfide cysteines are structurally locked as CYX.</li>
               <li><b>Fraction</b>: predicted protonated fraction at the reference pH.</li>
-              <li><b>Exposure</b>: qualitative solvent exposure category (buried / intermediate / exposed).</li>
+              <li><b>SASA exposure</b>: geometric accessibility category. A <b>Membrane-embedded</b> flag identifies residues supplied through <code>--opm-embedded</code>. Membrane embedding does not establish whether a side chain faces lipid, water, a pore, or a cavity.</li>
               <li><b>Neighbors</b>: residues within 5 Å of the selected residue.</li>
               <li><b>HB D</b>: count of nearby hydrogen-bond donors (filtered list shown in the info box).</li>
               <li><b>HB A</b>: count of nearby hydrogen-bond acceptors (filtered list shown in the info box).</li>
@@ -1293,13 +1351,25 @@ body.theme-light .app-footer {{
     </section>
 
     <section class="card">
+      <div class="card-header"><div class="card-title">Selected-residue titration curves</div></div>
+      <div class="card-body">
+        <div class="plot-shell">
+          <div id="titrationPlot" class="titration-empty">Select a residue in the table or 3D structure to display its titration curves.</div>
+        </div>
+        <div class="titration-note">Curves show protonated fractions calculated from each available predicted pKa using the Henderson–Hasselbalch relationship. Methods are distinguished by colour, line style, and reference-pH marker shape. These are evidence visualizations and do not assign a residue state.</div>
+      </div>
+    </section>
+
+    <section class="card">
       <div class="card-header"><div class="card-title">Residue table</div></div>
       <div class="card-body">
         <div class="table-tools">
           <div class="search-input">
             <span class="icon">🔍</span>
-            <input id="searchBox" type="text" placeholder="Filter by residue name, number, chain, state..." />
+            <input id="searchBox" type="search" autocomplete="off" placeholder="Search e.g. A CYS 59, membrane, SASA-exposed..." />
+            <button class="search-clear" id="clearSearchBtn" type="button" aria-label="Clear search" hidden>×</button>
           </div>
+          <span class="search-count" id="searchCount" aria-live="polite"></span>
           <div class="filter-chips" id="stateFilters">
             <div class="filter-chip active" data-state="all">All</div>
             <div class="filter-chip" data-state="Protonated">Prot.</div>
@@ -1324,17 +1394,16 @@ body.theme-light .app-footer {{
                   <th>pKa (DeepKa)</th>
                   <th>pKa (Avg.)</th>
                   <th>Set residue</th>
+                  <th>2D interactions</th>
                   <th>Fraction</th>
-                  <th>Exposure</th>
-                  <th>Neighbors</th>
-                  <th>HB D</th>
-                  <th>HB A</th>
+                  <th>SASA exposure</th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
           </div>
         </div>
+        <div class="table-policy-note">If no state is chosen, the canonical input state is preserved. Histidines require a manual state choice. Detected disulfide cysteines are locked as CYX.</div>
       </div>
     </section>
 
@@ -1458,19 +1527,23 @@ body.theme-light .app-footer {{
       </section>
     </div>
 
-    <section class="card">
-      <div class="card-header"><div class="card-title">Protonation summary</div></div>
-      <div class="card-body">
-        <div class="plot-shell">
-          {fig_html}
-        </div>
-      </div>
-    </section>
-
   </div>
 </div>
 
 {footer_html}
+
+<div class="interaction-modal" id="interactionModal" role="dialog" aria-modal="true" aria-labelledby="interactionTitle">
+  <div class="interaction-dialog">
+    <div class="interaction-header">
+      <strong id="interactionTitle">2D interactions</strong>
+      <div class="interaction-actions">
+        <button id="downloadInteractionSvg" type="button">Download SVG</button>
+        <button id="closeInteractionModal" type="button">Close</button>
+      </div>
+    </div>
+    <div class="interaction-canvas" id="interactionCanvas"></div>
+  </div>
+</div>
 
 <script>
 const pdbText = {pdb_js_literal};
@@ -1502,7 +1575,7 @@ let agreementFilter = "all";
 let coverageFilter = "all";
 let atypFilter = "all";
 
-const SELECTION_KEY = "prot_dashboard_resname_selection_v1";
+const SELECTION_KEY = "prot_dashboard_resname_selection_v2_explicit_only";
 let selectedMap = {{}};
 try {{
   selectedMap = JSON.parse(localStorage.getItem(SELECTION_KEY) || "{{}}") || {{}};
@@ -1523,11 +1596,26 @@ function getSelected(chain, resnum, fallbackVal) {{
 
 function setSelected(chain, resnum, val) {{
   const key = rowKey(chain, resnum);
-  selectedMap[key] = val;
+  if (val) selectedMap[key] = val;
+  else delete selectedMap[key];
   try {{
     localStorage.setItem(SELECTION_KEY, JSON.stringify(selectedMap));
   }} catch (e) {{
   }}
+}}
+
+function fallbackDecision(r) {{
+  if (r.Disulfide_bridge) return {{state:"CYX", source:"detected_disulfide"}};
+  const fallbacks = {{ASP:"ASP", GLU:"GLU", CYS:"CYS", LYS:"LYS", ARG:"ARG", TYR:"TYR"}};
+  const state = fallbacks[String(r.resname || "").toUpperCase()] || "";
+  return state ? {{state:state, source:"preserved_canonical_input"}} : {{state:"", source:"unassigned"}};
+}}
+
+function decisionForResidue(r) {{
+  if (r.Disulfide_bridge) return fallbackDecision(r);
+  const explicit = getSelected(r.chain, r.resnum, "");
+  if (explicit) return {{state:String(explicit), source:"user"}};
+  return fallbackDecision(r);
 }}
 
 function downloadSelectionsJson() {{
@@ -1535,8 +1623,7 @@ function downloadSelectionsJson() {{
   for (let i = 0; i < resData.length; i++) {{
     const r = resData[i];
     const allowed = Array.isArray(r.allowed_resnames) ? r.allowed_resnames : [];
-    const def = String(r.default_resname || "");
-    const sel = getSelected(r.chain, r.resnum, def);
+    const decision = decisionForResidue(r);
 
     out.push({{
       Residue: r.Residue,
@@ -1544,12 +1631,23 @@ function downloadSelectionsJson() {{
       resnum: Number(r.resnum),
       resname_original: String(r.resname || ""),
       allowed_resnames: allowed.slice(),
-      selected_resname: String(sel || def || "")
+      selected_resname: decision.state || null,
+      decision_source: decision.source,
+      predictions: {{
+        propka: r.propka_pKa == null ? null : Number(r.propka_pKa),
+        pypka: r.pypka_pKa == null ? null : Number(r.pypka_pKa),
+        deepka: r.deepka_pKa == null ? null : Number(r.deepka_pKa)
+      }},
+      structural_context: {{
+        exposure: String(r.Exposure || ""),
+        in_membrane_slab: !!r.In_membrane_slab,
+        ionizable_group_atoms: String(r.Ionizable_group_atoms || "")
+      }}
     }});
   }}
 
   const payload = {{
-    schema: "pkaraptor.resname_selection.v1",
+    schema: "pkaraptor.resname_selection.v2",
     pdb: "{Path(pdb_path).name}",
     ph: summaryStats && summaryStats.ph != null ? Number(summaryStats.ph) : null,
     selections: out
@@ -1598,27 +1696,18 @@ function passesMembraneFilter(res) {{
 
 function passesSearchFilter(res) {{
   if (!searchTerm) return true;
-  const q = searchTerm.toLowerCase();
-  const fields = [
+  const identityFields = [
     res.Residue,
     String(res.chain || ""),
     String(res.resnum),
+    String(res.resname || ""),
     res.Protonation_state,
     res.Exposure,
-    res.Neighbors_within_5A || "",
-    String(res.propka_pKa_raw ?? ""),
-    String(res.pypka_pKa ?? ""),
-    String(res.deepka_pKa ?? ""),
-    String(res.avg_pKa ?? ""),
-    res.method_agreement || "",
-    String(res.methods_present ?? ""),
-    (res.In_membrane_slab ? "membrane" : "non-membrane"),
+    (res.In_membrane_slab ? "membrane membrane-embedded" : "non-membrane"),
     (res.Disulfide_bridge ? "SS disulfide" : ""),
-    String(res.Disulfide_partner || ""),
-    (Array.isArray(res.allowed_resnames) ? res.allowed_resnames.join(" ") : ""),
-    String(getSelected(res.chain, res.resnum, res.default_resname || "")),
-  ].join(" ").toLowerCase();
-  return fields.indexOf(q) !== -1;
+  ].join(" ").toLowerCase().replace(/[^a-z0-9.+-]+/g, " ");
+  const tokens = searchTerm.toLowerCase().replace(/[^a-z0-9.+-]+/g, " ").trim().split(/\\s+/).filter(Boolean);
+  return tokens.every(function(token) {{ return identityFields.indexOf(token) !== -1; }});
 }}
 
 function getFilteredResidues() {{
@@ -1845,6 +1934,17 @@ function makeResnameDropdown(r) {{
   sel.style.fontSize = "0.78rem";
   sel.style.outline = "none";
 
+  if (r.Disulfide_bridge) {{
+    const disulfideOption = document.createElement("option");
+    disulfideOption.value = "CYX";
+    disulfideOption.textContent = "CYX · detected disulfide";
+    sel.appendChild(disulfideOption);
+    sel.value = "CYX";
+    sel.disabled = true;
+    sel.title = "Locked structural assignment: this cysteine participates in a detected disulfide bridge.";
+    return sel;
+  }}
+
   if (!allowed || allowed.length === 0) {{
     const opt = document.createElement("option");
     opt.value = def;
@@ -1854,6 +1954,11 @@ function makeResnameDropdown(r) {{
     return sel;
   }}
 
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "(choose)";
+  sel.appendChild(placeholder);
+
   for (let i = 0; i < allowed.length; i++) {{
     const v = String(allowed[i]);
     const opt = document.createElement("option");
@@ -1862,8 +1967,7 @@ function makeResnameDropdown(r) {{
     sel.appendChild(opt);
   }}
 
-  sel.value = allowed.indexOf(current) !== -1 ? current : def;
-  setSelected(r.chain, r.resnum, sel.value);
+  sel.value = allowed.indexOf(current) !== -1 ? current : "";
 
   sel.addEventListener("click", function(e) {{
     e.stopPropagation();
@@ -1880,6 +1984,23 @@ function renderTable() {{
   tbody.innerHTML = "";
 
   const filtered = getFilteredResidues();
+  const searchCount = document.getElementById("searchCount");
+  if (searchCount) {{
+    searchCount.textContent = filtered.length + " of " + resData.length + " residues";
+  }}
+
+  if (filtered.length === 0) {{
+    const emptyRow = document.createElement("tr");
+    const emptyCell = document.createElement("td");
+    emptyCell.colSpan = 9;
+    emptyCell.textContent = "No residues match the current search and filters.";
+    emptyCell.style.textAlign = "center";
+    emptyCell.style.padding = "18px";
+    emptyCell.style.color = "#94a3b8";
+    emptyRow.appendChild(emptyCell);
+    tbody.appendChild(emptyRow);
+    return;
+  }}
 
   for (let i = 0; i < filtered.length; i++) {{
     const r = filtered[i];
@@ -1923,6 +2044,19 @@ function renderTable() {{
     tdSel.appendChild(makeResnameDropdown(r));
     tr.appendChild(tdSel);
 
+    const tdInteractions = document.createElement("td");
+    const interactionButton = document.createElement("button");
+    interactionButton.type = "button";
+    interactionButton.className = "interaction-btn";
+    interactionButton.textContent = "View 2D";
+    interactionButton.disabled = !Array.isArray(r.interactions) || r.interactions.length === 0;
+    interactionButton.addEventListener("click", function(e) {{
+      e.stopPropagation();
+      openInteractionDiagram(r);
+    }});
+    tdInteractions.appendChild(interactionButton);
+    tr.appendChild(tdInteractions);
+
     const tdFrac = document.createElement("td");
     const fracLabel = document.createElement("div");
     fracLabel.classList.add("fraction-label");
@@ -1940,28 +2074,332 @@ function renderTable() {{
     tr.appendChild(tdFrac);
 
     const tdExp = document.createElement("td");
-    tdExp.textContent = r.Exposure || "–";
+    const exposureText = document.createElement("div");
+    exposureText.textContent = r.Exposure || "–";
+    tdExp.appendChild(exposureText);
+    if (r.In_membrane_slab) {{
+      const membraneFlag = document.createElement("span");
+      membraneFlag.className = "membrane-flag";
+      membraneFlag.textContent = "Membrane-embedded";
+      membraneFlag.title = "User-supplied through --opm-embedded. Membrane embedding does not imply lipid exposure, and SASA accessibility does not imply water exposure.";
+      tdExp.appendChild(membraneFlag);
+    }}
     tr.appendChild(tdExp);
-
-    const tdNei = document.createElement("td");
-    tdNei.textContent = r.Neighbors_within_5A || "–";
-    tr.appendChild(tdNei);
-
-    const tdHD = document.createElement("td");
-    tdHD.classList.add("small-num");
-    tdHD.textContent = String(dCount);
-    tdHD.title = hb.donors.map(x => x.raw).join(", ");
-    tr.appendChild(tdHD);
-
-    const tdHA = document.createElement("td");
-    tdHA.classList.add("small-num");
-    tdHA.textContent = String(aCount);
-    tdHA.title = hb.acceptors.map(x => x.raw).join(", ");
-    tr.appendChild(tdHA);
 
     tbody.appendChild(tr);
   }}
 }}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+let activeInteractionResidue = null;
+
+function svgElement(name, attrs) {{
+  const element = document.createElementNS(SVG_NS, name);
+  const values = attrs || {{}};
+  Object.keys(values).forEach(function(key) {{ element.setAttribute(key, String(values[key])); }});
+  return element;
+}}
+
+function interactionStyle(type) {{
+  const styles = {{
+    disulfide: {{color:"#d97706", dash:"", label:"Disulfide"}},
+    salt_bridge: {{color:"#dc2626", dash:"7 5", label:"Salt bridge"}},
+    potential_hbond: {{color:"#2563eb", dash:"4 5", label:"Potential H-bond"}},
+    hydrophobic_contact: {{color:"#7c3aed", dash:"2 5", label:"Hydrophobic"}},
+    close_contact: {{color:"#64748b", dash:"2 7", label:"Close contact"}}
+  }};
+  return styles[type] || styles.close_contact;
+}}
+
+function addSvgText(svg, x, y, textValue, attrs) {{
+  const textNode = svgElement("text", Object.assign({{x:x, y:y, "text-anchor":"middle", "font-family":"Arial, sans-serif"}}, attrs || {{}}));
+  textNode.textContent = textValue;
+  svg.appendChild(textNode);
+  return textNode;
+}}
+
+function residue2DTemplate(resname) {{
+  const backbone = {{N:[-62,92], CA:[0,92], C:[62,92], O:[92,60]}};
+  const templates = {{
+    ASP: {{atoms:{{CB:[0,48],CG:[0,4],OD1:[-40,-30],OD2:[40,-30]}},bonds:[["CA","CB",1],["CB","CG",1],["CG","OD1",2],["CG","OD2",1]]}},
+    GLU: {{atoms:{{CB:[0,55],CG:[0,18],CD:[0,-20],OE1:[-40,-52],OE2:[40,-52]}},bonds:[["CA","CB",1],["CB","CG",1],["CG","CD",1],["CD","OE1",2],["CD","OE2",1]]}},
+    HIS: {{atoms:{{CB:[0,52],CG:[0,13],ND1:[-38,-12],CE1:[-27,-54],NE2:[27,-54],CD2:[38,-12]}},bonds:[["CA","CB",1],["CB","CG",1],["CG","ND1",1],["ND1","CE1",2],["CE1","NE2",1],["NE2","CD2",2],["CD2","CG",1]]}},
+    LYS: {{atoms:{{CB:[0,55],CG:[0,20],CD:[0,-15],CE:[0,-50],NZ:[0,-88]}},bonds:[["CA","CB",1],["CB","CG",1],["CG","CD",1],["CD","CE",1],["CE","NZ",1]]}},
+    ARG: {{atoms:{{CB:[0,58],CG:[0,25],CD:[0,-8],NE:[0,-41],CZ:[0,-75],NH1:[-42,-105],NH2:[42,-105]}},bonds:[["CA","CB",1],["CB","CG",1],["CG","CD",1],["CD","NE",1],["NE","CZ",1],["CZ","NH1",2],["CZ","NH2",1]]}},
+    CYS: {{atoms:{{CB:[0,45],SG:[0,-4]}},bonds:[["CA","CB",1],["CB","SG",1]]}},
+    TYR: {{atoms:{{CB:[0,57],CG:[0,20],CD1:[-38,-2],CE1:[-38,-45],CZ:[0,-67],CE2:[38,-45],CD2:[38,-2],OH:[0,-108]}},bonds:[["CA","CB",1],["CB","CG",1],["CG","CD1",1],["CD1","CE1",2],["CE1","CZ",1],["CZ","CE2",2],["CE2","CD2",1],["CD2","CG",2],["CZ","OH",1]]}}
+  }};
+  const selected = templates[String(resname || "").toUpperCase()] || {{atoms:{{CB:[0,45]}},bonds:[["CA","CB",1]]}};
+  return {{
+    atoms:Object.assign({{}},backbone,selected.atoms),
+    bonds:[["N","CA",1],["CA","C",1],["C","O",2]].concat(selected.bonds)
+  }};
+}}
+
+function atomColors(atomName) {{
+  const name = String(atomName || "C").toUpperCase();
+  const element = name.startsWith("N") ? "N" : (name.startsWith("O") ? "O" : (name.startsWith("S") ? "S" : "C"));
+  return {{
+    C:{{fill:"#f8fafc",stroke:"#475569",text:"#172033"}},
+    N:{{fill:"#dbeafe",stroke:"#2563eb",text:"#1e3a8a"}},
+    O:{{fill:"#fee2e2",stroke:"#dc2626",text:"#7f1d1d"}},
+    S:{{fill:"#fef3c7",stroke:"#d97706",text:"#78350f"}}
+  }}[element];
+}}
+
+function drawChemicalBond(svg, a, b, order) {{
+  const dx = b.x-a.x;
+  const dy = b.y-a.y;
+  const length = Math.max(1, Math.sqrt(dx*dx+dy*dy));
+  const px = -dy/length*3.2;
+  const py = dx/length*3.2;
+  (Number(order) === 2 ? [-1,1] : [0]).forEach(function(offset) {{
+    svg.appendChild(svgElement("line", {{
+      x1:a.x+px*offset, y1:a.y+py*offset, x2:b.x+px*offset, y2:b.y+py*offset,
+      stroke:"#334155", "stroke-width":2.4, "stroke-linecap":"round"
+    }}));
+  }});
+}}
+
+function openInteractionDiagram(residue) {{
+  activeInteractionResidue = residue;
+  const modal = document.getElementById("interactionModal");
+  const canvas = document.getElementById("interactionCanvas");
+  const title = document.getElementById("interactionTitle");
+  title.textContent = residue.Residue + " · atom-level interaction map";
+  canvas.innerHTML = "";
+  const outputDecision = decisionForResidue(residue);
+  if (outputDecision.state) {{
+    const warning = document.createElement("div");
+    warning.className = "state-map-warning";
+    if (outputDecision.source === "detected_disulfide") {{
+      warning.textContent = "Detected disulfide: CYX is locked for output. The 2D interaction map remains based on the original input structure.";
+    }} else if (outputDecision.source === "user") {{
+      warning.textContent = "State selected for output: " + outputDecision.state + ". The 2D interaction map is based on the original input structure and is not recalculated after this change.";
+    }} else {{
+      warning.textContent = "No manual choice: " + outputDecision.state + " will be used as the defined deprotonated fallback. The 2D interaction map is not recalculated.";
+    }}
+    canvas.appendChild(warning);
+  }}
+
+  const svg = svgElement("svg", {{viewBox:"0 0 840 480", class:"interaction-svg", role:"img", "aria-label":residue.Residue + " atom-level interaction map"}});
+  const center = {{x:420,y:238}};
+  const records = Array.isArray(residue.interactions) ? residue.interactions : [];
+  const typeRank = {{disulfide:0,salt_bridge:1,potential_hbond:2,hydrophobic_contact:3,close_contact:4}};
+  const contactMap = {{}};
+  records.forEach(function(record) {{
+    const key = String(record.partner || "unknown") + "|" + String(record.partner_atom || "?");
+    if (!contactMap[key]) contactMap[key] = [];
+    contactMap[key].push(record);
+  }});
+  const allContacts = Object.keys(contactMap).sort(function(a,b) {{
+    const ar = Math.min.apply(null,contactMap[a].map(function(item){{return typeRank[item.type]??9;}}));
+    const br = Math.min.apply(null,contactMap[b].map(function(item){{return typeRank[item.type]??9;}}));
+    if (ar !== br) return ar-br;
+    return Math.min.apply(null,contactMap[a].map(function(item){{return Number(item.distance_A);}}))-
+      Math.min.apply(null,contactMap[b].map(function(item){{return Number(item.distance_A);}}));
+  }});
+  const contacts = allContacts.slice(0,10);
+  const positions = {{}};
+  const leftCount = Math.ceil(contacts.length/2);
+  contacts.forEach(function(key,index) {{
+    const onLeft = index < leftCount;
+    const slot = onLeft ? index : index-leftCount;
+    const count = onLeft ? leftCount : contacts.length-leftCount;
+    positions[key] = {{x:onLeft?104:736,y:count<=1?center.y:76+slot*(290/(count-1)),onLeft:onLeft}};
+  }});
+
+  const template = residue2DTemplate(residue.resname);
+  const atomPositions = {{}};
+  Object.keys(template.atoms).forEach(function(atomName) {{
+    const p = template.atoms[atomName];
+    atomPositions[atomName] = {{x:center.x+p[0],y:center.y+p[1]}};
+  }});
+  template.bonds.forEach(function(bond) {{
+    if (atomPositions[bond[0]] && atomPositions[bond[1]]) drawChemicalBond(svg,atomPositions[bond[0]],atomPositions[bond[1]],bond[2]);
+  }});
+
+  contacts.forEach(function(key) {{
+    const matches = contactMap[key].slice().sort(function(a,b) {{
+      return (typeRank[a.type]??9)-(typeRank[b.type]??9) || Number(a.distance_A)-Number(b.distance_A);
+    }});
+    const primary = matches[0];
+    const position = positions[key];
+    const style = interactionStyle(primary.type);
+    const centralAtom = String(primary.central_atom||"CA").toUpperCase();
+    const anchor = atomPositions[centralAtom] || atomPositions.CA || center;
+    const startX = position.onLeft ? position.x+72 : position.x-72;
+    svg.appendChild(svgElement("line", {{x1:startX,y1:position.y,x2:anchor.x,y2:anchor.y,stroke:style.color,"stroke-width":primary.type==="disulfide"?4:2.5,"stroke-dasharray":style.dash,opacity:0.9}}));
+    addSvgText(svg,(startX+anchor.x)/2,(position.y+anchor.y)/2-7,
+      String(primary.central_atom||"?")+"–"+String(primary.partner_atom||"?")+" "+Number(primary.distance_A).toFixed(2)+" Å",
+      {{"font-size":9.5,fill:style.color,"paint-order":"stroke",stroke:"white","stroke-width":5}});
+
+    const group = svgElement("g",{{class:"interaction-node",tabindex:"0"}});
+    group.appendChild(svgElement("rect",{{x:position.x-72,y:position.y-31,width:144,height:62,rx:10,fill:"#f8fafc",stroke:style.color,"stroke-width":2.5}}));
+    addSvgText(group,position.x,position.y-9,String(primary.partner||"unknown"),{{"font-size":11.5,"font-weight":700,fill:"#172033"}});
+    const colors = atomColors(primary.partner_atom);
+    addSvgText(group,position.x,position.y+10,String(primary.partner_atom||"?"),{{"font-size":14,"font-weight":700,fill:colors.text}});
+    addSvgText(group,position.x,position.y+24,style.label,{{"font-size":8.5,fill:"#64748b"}});
+    group.addEventListener("click",function(){{closeInteractionDiagram();selectResidue(Number(primary.partner_resnum),String(primary.partner_chain||""));}});
+    svg.appendChild(group);
+  }});
+
+  Object.keys(atomPositions).forEach(function(atomName) {{
+    const point = atomPositions[atomName];
+    const colors = atomColors(atomName);
+    const group = svgElement("g",{{class:"chemical-atom"}});
+    group.appendChild(svgElement("circle",{{cx:point.x,cy:point.y,r:15,fill:colors.fill,stroke:colors.stroke,"stroke-width":2.2}}));
+    addSvgText(group,point.x,point.y+3.5,atomName,{{"font-size":9.5,"font-weight":700,fill:colors.text}});
+    svg.appendChild(group);
+  }});
+
+  addSvgText(svg,center.x,24,residue.Residue+" · canonical 2D residue structure",{{"font-size":15,"font-weight":700,fill:"#172033"}});
+  addSvgText(svg,center.x,43,"Canonical schematic; contact distances come from the input 3D structure",{{"font-size":9.5,fill:"#64748b"}});
+  const shownTypes = new Set();
+  contacts.forEach(function(key){{contactMap[key].forEach(function(item){{shownTypes.add(item.type);}});}});
+  ["potential_hbond","salt_bridge","hydrophobic_contact","disulfide","close_contact"].filter(function(type){{return shownTypes.has(type);}}).forEach(function(type,index){{
+    const style = interactionStyle(type);
+    const x = 70+index*155;
+    svg.appendChild(svgElement("line",{{x1:x,y1:451,x2:x+42,y2:451,stroke:style.color,"stroke-width":3,"stroke-dasharray":style.dash}}));
+    addSvgText(svg,x+91,455,style.label,{{"font-size":11,fill:"#334155"}});
+  }});
+  if (contacts.length === 0) addSvgText(svg,center.x,405,"No informative contacts are available for this residue.",{{"font-size":14,fill:"#64748b"}});
+  if (allContacts.length > contacts.length) addSvgText(svg,center.x,420,"+"+String(allContacts.length-contacts.length)+" weaker atom contacts omitted",{{"font-size":11,fill:"#64748b"}});
+  canvas.appendChild(svg);
+  modal.classList.add("visible");
+}}
+
+function openLegacyInteractionDiagram(residue) {{
+  activeInteractionResidue = residue;
+  const modal = document.getElementById("interactionModal");
+  const canvas = document.getElementById("interactionCanvas");
+  const title = document.getElementById("interactionTitle");
+  title.textContent = residue.Residue + " · local interaction map";
+  canvas.innerHTML = "";
+
+  const svg = svgElement("svg", {{viewBox:"0 0 840 380", class:"interaction-svg", role:"img"}});
+  const center = {{x:420, y:165}};
+  const records = Array.isArray(residue.interactions) ? residue.interactions : [];
+  const typeRank = {{disulfide:0, salt_bridge:1, potential_hbond:2, hydrophobic_contact:3, close_contact:4}};
+  const partnerMap = {{}};
+  records.forEach(function(record) {{
+    const key = String(record.partner || "unknown");
+    if (!partnerMap[key]) partnerMap[key] = [];
+    partnerMap[key].push(record);
+  }});
+  const allPartners = Object.keys(partnerMap).sort(function(a, b) {{
+    const ar = Math.min.apply(null, partnerMap[a].map(function(item) {{ return typeRank[item.type] ?? 9; }}));
+    const br = Math.min.apply(null, partnerMap[b].map(function(item) {{ return typeRank[item.type] ?? 9; }}));
+    if (ar !== br) return ar - br;
+    const ad = Math.min.apply(null, partnerMap[a].map(function(item) {{ return Number(item.distance_A); }}));
+    const bd = Math.min.apply(null, partnerMap[b].map(function(item) {{ return Number(item.distance_A); }}));
+    return ad - bd;
+  }});
+  const partners = allPartners.slice(0, 8);
+  const positions = {{}};
+  const leftCount = Math.ceil(partners.length / 2);
+  partners.forEach(function(partner, index) {{
+    const onLeft = index < leftCount;
+    const slot = onLeft ? index : index - leftCount;
+    const count = onLeft ? leftCount : partners.length - leftCount;
+    const y = count <= 1 ? center.y : 60 + slot * (210 / (count - 1));
+    positions[partner] = {{x:onLeft ? 130 : 710, y:y, onLeft:onLeft}};
+  }});
+
+  partners.forEach(function(partner) {{
+    const partnerRecords = partnerMap[partner].slice().sort(function(a, b) {{
+      const rankDelta = (typeRank[a.type] ?? 9) - (typeRank[b.type] ?? 9);
+      return rankDelta || Number(a.distance_A) - Number(b.distance_A);
+    }});
+    const primary = partnerRecords[0];
+    const position = positions[partner];
+    const style = interactionStyle(primary.type);
+    const startX = position.onLeft ? position.x + 77 : position.x - 77;
+    const endX = position.onLeft ? center.x - 91 : center.x + 91;
+    const line = svgElement("line", {{
+      x1:startX, y1:position.y, x2:endX, y2:center.y,
+      stroke:style.color, "stroke-width":primary.type === "disulfide" ? 4 : 2.5,
+      "stroke-dasharray":style.dash, opacity:0.9
+    }});
+    svg.appendChild(line);
+    const midpointX = (startX + endX) / 2;
+    const midpointY = (center.y + position.y) / 2;
+    const contactText = partnerRecords.slice(0, 2).map(function(record) {{
+      return String(record.central_atom || "?") + "–" + String(record.partner_atom || "?") + " " + Number(record.distance_A).toFixed(2) + " Å";
+    }}).join(" · ");
+    addSvgText(
+      svg, midpointX, midpointY - 7, contactText,
+      {{"font-size":10, fill:style.color, "paint-order":"stroke", stroke:"white", "stroke-width":5}}
+    );
+    const sample = primary || {{}};
+    const group = svgElement("g", {{class:"interaction-node", tabindex:"0"}});
+    group.appendChild(svgElement("rect", {{x:position.x-77, y:position.y-29, width:154, height:58, rx:12, fill:"#f8fafc", stroke:style.color, "stroke-width":2.5}}));
+    const line1 = svgElement("text", {{x:position.x, y:position.y - 5, "text-anchor":"middle", "font-family":"Arial", "font-size":13, "font-weight":700, fill:"#172033"}});
+    line1.textContent = partner;
+    group.appendChild(line1);
+    const types = Array.from(new Set(partnerRecords.map(function(item) {{ return interactionStyle(item.type).label; }})));
+    const line2 = svgElement("text", {{x:position.x, y:position.y + 14, "text-anchor":"middle", "font-family":"Arial", "font-size":10, fill:"#53657d"}});
+    line2.textContent = types.join(" / ");
+    group.appendChild(line2);
+    group.addEventListener("click", function() {{
+      closeInteractionDiagram();
+      selectResidue(Number(sample.partner_resnum), String(sample.partner_chain || ""));
+    }});
+    svg.appendChild(group);
+  }});
+
+  const centerGroup = svgElement("g", {{class:"interaction-node"}});
+  centerGroup.appendChild(svgElement("rect", {{x:center.x-91, y:center.y-41, width:182, height:82, rx:16, fill:"#183b66", stroke:"#0f2744", "stroke-width":3}}));
+  const centerLabel = svgElement("text", {{x:center.x, y:center.y - 7, "text-anchor":"middle", "font-family":"Arial", "font-size":17, "font-weight":700, fill:"white"}});
+  centerLabel.textContent = residue.Residue;
+  centerGroup.appendChild(centerLabel);
+  const atomLabel = svgElement("text", {{x:center.x, y:center.y + 17, "text-anchor":"middle", "font-family":"Arial", "font-size":11, fill:"#dbeafe"}});
+  atomLabel.textContent = residue.Ionizable_group_atoms || "ionizable group";
+  centerGroup.appendChild(atomLabel);
+  svg.appendChild(centerGroup);
+
+  const shownTypes = new Set();
+  partners.forEach(function(partner) {{ partnerMap[partner].forEach(function(item) {{ shownTypes.add(item.type); }}); }});
+  const legendTypes = ["potential_hbond", "salt_bridge", "hydrophobic_contact", "disulfide", "close_contact"].filter(function(type) {{ return shownTypes.has(type); }});
+  legendTypes.forEach(function(type, index) {{
+    const style = interactionStyle(type);
+    const y = 342;
+    const x = 70 + index * 155;
+    svg.appendChild(svgElement("line", {{x1:x, y1:y, x2:x+42, y2:y, stroke:style.color, "stroke-width":3, "stroke-dasharray":style.dash}}));
+    addSvgText(svg, x+91, y+4, style.label, {{"font-size":11, fill:"#334155"}});
+  }});
+
+  if (partners.length === 0) {{
+    addSvgText(svg, center.x, 270, "No informative contacts are available for this residue.", {{"font-size":14, fill:"#64748b"}});
+  }} else if (allPartners.length > partners.length) {{
+    addSvgText(svg, center.x, 304, "+" + String(allPartners.length - partners.length) + " weaker contacts omitted", {{"font-size":11, fill:"#64748b"}});
+  }}
+  canvas.appendChild(svg);
+  modal.classList.add("visible");
+}}
+
+function closeInteractionDiagram() {{
+  document.getElementById("interactionModal").classList.remove("visible");
+}}
+
+function downloadInteractionSvg() {{
+  const svg = document.querySelector("#interactionCanvas svg");
+  if (!svg || !activeInteractionResidue) return;
+  const serialized = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([serialized], {{type:"image/svg+xml"}});
+  const anchor = document.createElement("a");
+  anchor.href = URL.createObjectURL(blob);
+  anchor.download = String(activeInteractionResidue.Residue || "residue").replace(/[^A-Za-z0-9_-]+/g, "_") + "_interactions.svg";
+  document.body.appendChild(anchor);
+  anchor.click();
+  setTimeout(function() {{ URL.revokeObjectURL(anchor.href); anchor.remove(); }}, 0);
+}}
+
+document.getElementById("closeInteractionModal").addEventListener("click", closeInteractionDiagram);
+document.getElementById("downloadInteractionSvg").addEventListener("click", downloadInteractionSvg);
+document.getElementById("interactionModal").addEventListener("click", function(event) {{
+  if (event.target === this) closeInteractionDiagram();
+}});
 
 function chip(text, strongVal=null, opts={{}}) {{
   const d = document.createElement("div");
@@ -2536,10 +2974,89 @@ function renderDisulfides() {{
   }}
 }}
 
+function showTitrationMessage(message) {{
+  const plot = document.getElementById("titrationPlot");
+  if (!plot) return;
+  try {{ Plotly.purge(plot); }} catch (e) {{}}
+  plot.classList.add("titration-empty");
+  plot.textContent = message;
+}}
+
+function renderTitrationPlot(r) {{
+  const plot = document.getElementById("titrationPlot");
+  if (!plot) return;
+  if (!r) {{
+    showTitrationMessage("Select a residue in the table or 3D structure to display its titration curves.");
+    return;
+  }}
+  if (r.Disulfide_bridge) {{
+    showTitrationMessage("Titration curves are not applicable: this cysteine participates in a detected disulfide bridge.");
+    return;
+  }}
+
+  const methodValues = [
+    {{name:"PROPKA", value:r.propka_pKa, color:"#56B4E9", dash:"solid", symbol:"circle"}},
+    {{name:"PyPka", value:r.pypka_pKa, color:"#E69F00", dash:"dash", symbol:"square"}},
+    {{name:"DeepKa", value:r.deepka_pKa, color:"#CC79A7", dash:"dot", symbol:"triangle-up"}}
+  ].filter(function(item) {{
+    const value = Number(item.value);
+    return item.value != null && isFinite(value) && value >= 0 && value <= 14;
+  }});
+  if (methodValues.length === 0) {{
+    showTitrationMessage("No valid pKa predictions are available for " + String(r.Residue || "this residue") + ".");
+    return;
+  }}
+
+  const phValues = [];
+  for (let i = 0; i <= 140; i++) phValues.push(i / 10);
+  const referencePh = Number(summaryStats && summaryStats.ph != null ? summaryStats.ph : 7.0);
+  const traces = [];
+  methodValues.forEach(function(method) {{
+    const pka = Number(method.value);
+    const fractions = phValues.map(function(value) {{ return 1 / (1 + Math.pow(10, value - pka)); }});
+    const referenceFraction = 1 / (1 + Math.pow(10, referencePh - pka));
+    traces.push({{
+      x:phValues, y:fractions, type:"scatter", mode:"lines", name:method.name,
+      line:{{color:method.color, width:3, dash:method.dash}},
+      customdata:phValues.map(function() {{ return pka; }}),
+      hovertemplate:"<b>" + method.name + "</b><br>pKa: %{{customdata:.2f}}<br>pH: %{{x:.1f}}<br>Protonated fraction: %{{y:.1%}}<extra></extra>"
+    }});
+    traces.push({{
+      x:[referencePh], y:[referenceFraction], type:"scatter", mode:"markers", showlegend:false,
+      marker:{{color:method.color, size:11, symbol:method.symbol, line:{{color:"#ffffff", width:1.5}}}},
+      customdata:[pka],
+      hovertemplate:"<b>" + method.name + " at reference pH</b><br>pKa: %{{customdata:.2f}}<br>pH: %{{x:.2f}}<br>Protonated fraction: %{{y:.1%}}<extra></extra>"
+    }});
+  }});
+
+  const wasMessage = plot.classList.contains("titration-empty");
+  plot.classList.remove("titration-empty");
+  if (wasMessage) plot.textContent = "";
+  const isLight = themeMode === "light";
+  const referenceColor = isLight ? "#334155" : "#f8fafc";
+  Plotly.react(plot, traces, {{
+    title:{{text:"<b>" + String(r.Residue || "Residue") + "</b> · predicted protonated fraction", x:0.04}},
+    height:380,
+    margin:{{l:65,r:28,t:65,b:58}},
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+    font:{{family:"Inter, Arial, sans-serif", color:isLight?"#0f172a":"#e5e7eb"}},
+    xaxis:{{title:"pH", range:[0,14], dtick:1, gridcolor:isLight?"rgba(15,23,42,0.10)":"rgba(148,163,184,0.18)"}},
+    yaxis:{{title:"Protonated fraction", range:[0,1], tickformat:".0%", gridcolor:isLight?"rgba(15,23,42,0.10)":"rgba(148,163,184,0.18)"}},
+    legend:{{orientation:"h", x:0.5, xanchor:"center", y:1.13}},
+    shapes:[
+      {{type:"line",x0:referencePh,x1:referencePh,y0:0,y1:1,line:{{color:referenceColor,width:2,dash:"dashdot"}}}},
+      {{type:"line",x0:0,x1:14,y0:0.5,y1:0.5,line:{{color:"#94a3b8",width:1,dash:"dot"}}}}
+    ],
+    annotations:[{{x:referencePh,y:1,xref:"x",yref:"paper",text:"reference pH " + referencePh.toFixed(2),showarrow:false,yshift:12,font:{{color:referenceColor,size:11}}}}]
+  }}, {{responsive:true, displaylogo:false}});
+}}
+
 function selectResidue(n, chain="") {{
   const info = document.getElementById("infoBox");
   const r = findResidue(Number(n), chain);
-  if (!r || !comp) return;
+  if (!r) return;
+  renderTitrationPlot(r);
+  if (!comp) return;
 
   markRowSelected(r.chain, r.resnum);
 
@@ -2584,7 +3101,7 @@ function selectResidue(n, chain="") {{
   const spreadText = (r.pka_spread == null || isNaN(r.pka_spread)) ? "–" : Number(r.pka_spread).toFixed(2);
   const deltaText = (r.delta_pka_ph == null || isNaN(r.delta_pka_ph)) ? "–" : Number(r.delta_pka_ph).toFixed(2);
 
-  const memText = r.In_membrane_slab ? "Yes" : "No";
+  const memText = r.In_membrane_slab ? "Embedded (user-supplied)" : "Not flagged";
 
   info.innerHTML =
     '<div class="info-topbar">' +
@@ -2608,8 +3125,8 @@ function selectResidue(n, chain="") {{
         '<div>Method agreement</div><b>' + (r.method_agreement || "–") + '</b>' +
         '<div>Protonation</div><b>' + r.Protonation_state + '</b>' +
         '<div>Fraction (prot.)</div><b>' + fracText + '</b>' +
-        '<div>Exposure</div><b>' + (r.Exposure || "–") + '</b>' +
-        '<div>Membrane</div><b>' + memText + '</b>' +
+        '<div>SASA exposure</div><b>' + (r.Exposure || "–") + '</b>' +
+        '<div>Membrane context</div><b>' + memText + '</b>' +
         '<div>Neighbors</div><b>' + (r.Neighbors_within_5A || "–") + '</b>' +
         '<div>HBond shell (filtered)</div><b>D ' + dCount + ' · A ' + aCount + '</b>' +
       '</div>' +
@@ -2645,6 +3162,8 @@ function resetViewer() {{
     info.innerHTML = "";
   }}
 
+  renderTitrationPlot(null);
+
   safeAutoView();
 }}
 
@@ -2657,12 +3176,32 @@ document.getElementById("toggleDumBtn").addEventListener("click", function() {{
   setDumVisibility(!dumOn);
 }});
 
-document.getElementById("searchBox").addEventListener("input", function(e) {{
-  searchTerm = e.target.value.trim();
+const searchBox = document.getElementById("searchBox");
+const clearSearchBtn = document.getElementById("clearSearchBtn");
+
+function updateSearch(value) {{
+  searchTerm = String(value || "").trim();
+  clearSearchBtn.hidden = searchTerm.length === 0;
   renderTable();
-  renderDiagnostics();
-  renderAtypical();
-  renderDisulfides();
+}}
+
+searchBox.addEventListener("input", function(e) {{
+  updateSearch(e.target.value);
+}});
+
+searchBox.addEventListener("keydown", function(e) {{
+  if (e.key === "Escape" && searchBox.value) {{
+    e.preventDefault();
+    e.stopPropagation();
+    searchBox.value = "";
+    updateSearch("");
+  }}
+}});
+
+clearSearchBtn.addEventListener("click", function() {{
+  searchBox.value = "";
+  updateSearch("");
+  searchBox.focus();
 }});
 
 const chips = document.querySelectorAll("#stateFilters .filter-chip");
@@ -2739,12 +3278,17 @@ window.addEventListener("keydown", function(e) {{
   if (e.key === "g" || e.key === "G") toggleGuide();
   else if (e.key === "p" || e.key === "P") togglePalette();
   else if (e.key === "t" || e.key === "T") toggleTheme();
-  else if (e.key === "Escape") resetViewer();
+  else if (e.key === "Escape") {{
+    const interactionModal = document.getElementById("interactionModal");
+    if (interactionModal && interactionModal.classList.contains("visible")) closeInteractionDiagram();
+    else resetViewer();
+  }}
 }});
 
 updatePaletteButton();
 applyDiagVisibility();
 applyTheme();
+renderTitrationPlot(null);
 renderTable();
 renderDiagnostics();
 renderAtypical();

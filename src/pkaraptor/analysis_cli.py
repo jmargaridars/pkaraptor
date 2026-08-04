@@ -90,7 +90,7 @@ def _drop_duplicate_columns_case_insensitive(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, keep].copy()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description="Step 1: Generate protonation_environment_analysis.csv from a PDB using pKa sources and environment descriptors."
     )
@@ -103,8 +103,6 @@ def main() -> None:
     parser.add_argument("--deepka-csv", help='DeepKa server CSV (columns like "Chain", "Res ID", "Res Name", "Predict pKa")')
 
     parser.add_argument("--opm-id", default="", help="Optional OPM identifier for downstream visualization.")
-    parser.add_argument("--opm-zmin", type=float, default=np.nan, help="Lower Z boundary of membrane slab in Angstrom.")
-    parser.add_argument("--opm-zmax", type=float, default=np.nan, help="Upper Z boundary of membrane slab in Angstrom.")
     parser.add_argument("--opm-pdb", help="Oriented PDB from PPM/OPM (used only for environment feature calculation).")
     parser.add_argument("--opm-residues", help='(Legacy) residue ranges without chain (e.g. "48-66,69,426"). Applies to all chains.')
     parser.add_argument(
@@ -113,15 +111,12 @@ def main() -> None:
         help='Chain-aware embedded residues. Repeatable. Example: --opm-embedded "A:48-66,69,426" --opm-embedded "B:48-66,69,426,461"',
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     pdb_path = str(args.pdb)
     ph = float(args.ph)
 
     opm_id = str(args.opm_id).strip()
-    opm_zmin = float(args.opm_zmin) if not np.isnan(args.opm_zmin) else None
-    opm_zmax = float(args.opm_zmax) if not np.isnan(args.opm_zmax) else None
-
     chain_embedded = parse_opm_embedded_args(args.opm_embedded)
 
     legacy_res_set: Optional[Set[int]] = None
@@ -133,8 +128,6 @@ def main() -> None:
     env_df = compute_environment_features(
         pdb_for_env,
         opm_id=opm_id if opm_id else None,
-        opm_zmin_A=opm_zmin,
-        opm_zmax_A=opm_zmax,
     )
     if env_df.empty:
         raise SystemExit("No titratable residues found or environment analysis failed.")
@@ -234,11 +227,18 @@ def main() -> None:
         "HBond_shell_acceptors_count",
         "HBond_shell_donors",
         "HBond_shell_acceptors",
+        "HIS_ND1_near_donors",
+        "HIS_ND1_near_acceptors",
+        "HIS_NE2_near_donors",
+        "HIS_NE2_near_acceptors",
+        "Interaction_diagram_json",
         "z_CA_A",
+        "Ionizable_group_atoms",
+        "Ionizable_group_x_A",
+        "Ionizable_group_y_A",
+        "Ionizable_group_z_A",
         "In_membrane_slab",
         "OPM_id",
-        "OPM_zmin_A",
-        "OPM_zmax_A",
         "Protonation_fraction",
         "Protonation_state",
     ]

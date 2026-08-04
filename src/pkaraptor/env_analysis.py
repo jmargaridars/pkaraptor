@@ -2,11 +2,18 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import json
 from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
 import mdtraj as md
+
+from .environment_geometry import (
+    IONIZABLE_GROUP_ATOMS,
+    ionizable_group_position_nm,
+)
+from .interaction_analysis import classify_interaction
 
 TITRATABLE_RESIDUES = {"ASP", "GLU", "HIS", "LYS", "ARG", "CYS", "TYR"}
 
@@ -46,7 +53,7 @@ def _donor_atom(atom: md.Topology.Atom) -> bool:
     if atom.element is None:
         return False
     sym = str(atom.element.symbol).upper()
-    if sym not in {"N", "S"}:
+    if sym not in {"N", "O", "S"}:
         return False
 
     resn = str(atom.residue.name).upper()
@@ -208,14 +215,13 @@ def _compute_disulfides(
 def compute_environment_features(
     pdb_path: str,
     opm_id: Optional[str] = None,
-    opm_zmin_A: Optional[float] = None,
-    opm_zmax_A: Optional[float] = None,
     neighbors_cutoff_A: float = 5.0,
     neighbors_scheme: str = "closest",
     sasa_include_waters: bool = False,
     neighbors_include_waters: bool = True,
     neighbors_include_membrane_markers: bool = False,
     disulfide_sg_cutoff_A: float = 2.35,
+    hbond_cutoff_A: float = 3.5,
 ) -> pd.DataFrame:
     traj = md.load_pdb(pdb_path)
     top = traj.topology
@@ -322,6 +328,23 @@ def compute_environment_features(
         if resname not in TITRATABLE_RESIDUES:
             continue
 
+        residue_atoms = list(res.atoms)
+        atom_names = [atom.name for atom in residue_atoms]
+        atom_xyz_nm = xyz_nm[[atom.index for atom in residue_atoms]]
+        group_xyz_nm, group_atoms_used = ionizable_group_position_nm(
+            resname, atom_names, atom_xyz_nm
+        )
+        group_z_A = float(group_xyz_nm[2] * 10.0)
+
+        wanted_names = IONIZABLE_GROUP_ATOMS.get(resname, ())
+        group_atom_indices = [
+            atom.index for atom in residue_atoms if atom.name.strip().upper() in wanted_names
+        ]
+        if not group_atom_indices:
+            group_atom_indices = [atom.index for atom in residue_atoms if atom.name == "CA"]
+        if not group_atom_indices:
+            group_atom_indices = [atom.index for atom in residue_atoms]
+
         resseq = int(res.resSeq)
         chain = _chain_label(res.chain)
         label = _res_label(chain, resname, resseq)
@@ -332,16 +355,24 @@ def compute_environment_features(
 
         z_val_A = float(rep_z_A[res.index]) if res.index < len(rep_z_A) else np.nan
 
-        in_mem = False
-        if opm_zmin_A is not None and opm_zmax_A is not None and not np.isnan(z_val_A):
-            zlo = min(opm_zmin_A, opm_zmax_A)
-            zhi = max(opm_zmin_A, opm_zmax_A)
-            in_mem = (z_val_A >= zlo) and (z_val_A <= zhi)
-
         shell_res_idx = neighbor_res_indices.get(res.index, set())
 
         donors_shell: List[str] = []
         acceptors_shell: List[str] = []
+        histidine_context: Dict[str, str] = {
+            "HIS_ND1_near_donors": "",
+            "HIS_ND1_near_acceptors": "",
+            "HIS_NE2_near_donors": "",
+            "HIS_NE2_near_acceptors": "",
+        }
+
+        histidine_targets = {
+            atom.name.upper(): atom.index
+            for atom in residue_atoms
+            if resname == "HIS" and atom.name.upper() in {"ND1", "NE2"}
+        }
+        histidine_contacts: Dict[str, List[str]] = defaultdict(list)
+        hbond_cutoff_nm = float(hbond_cutoff_A) / 10.0
 
         for ridx in sorted(shell_res_idx):
             nres = top.residue(ridx)
@@ -353,9 +384,94 @@ def compute_environment_features(
             nresseq = int(nres.resSeq)
 
             for a in donors_by_res.get(ridx, []):
-                donors_shell.append(_atom_label(nchain, nresn, nresseq, a.name))
+                distance_nm = min(
+                    float(np.linalg.norm(xyz_nm[a.index] - xyz_nm[target_index]))
+                    for target_index in group_atom_indices
+                )
+                if distance_nm <= cutoff_nm:
+                    donors_shell.append(_atom_label(nchain, nresn, nresseq, a.name))
+                for target_name, target_index in histidine_targets.items():
+                    if float(np.linalg.norm(xyz_nm[a.index] - xyz_nm[target_index])) <= hbond_cutoff_nm:
+                        histidine_contacts[f"HIS_{target_name}_near_donors"].append(
+                            _atom_label(nchain, nresn, nresseq, a.name)
+                        )
             for a in acceptors_by_res.get(ridx, []):
-                acceptors_shell.append(_atom_label(nchain, nresn, nresseq, a.name))
+                distance_nm = min(
+                    float(np.linalg.norm(xyz_nm[a.index] - xyz_nm[target_index]))
+                    for target_index in group_atom_indices
+                )
+                if distance_nm <= cutoff_nm:
+                    acceptors_shell.append(_atom_label(nchain, nresn, nresseq, a.name))
+                for target_name, target_index in histidine_targets.items():
+                    if float(np.linalg.norm(xyz_nm[a.index] - xyz_nm[target_index])) <= hbond_cutoff_nm:
+                        histidine_contacts[f"HIS_{target_name}_near_acceptors"].append(
+                            _atom_label(nchain, nresn, nresseq, a.name)
+                        )
+
+        for column in histidine_context:
+            histidine_context[column] = ", ".join(histidine_contacts.get(column, []))
+
+        interaction_records: List[Dict[str, object]] = []
+        for ridx in sorted(shell_res_idx):
+            partner_residue = top.residue(ridx)
+            if not partner_residue.is_protein:
+                continue
+            partner_chain = _chain_label(partner_residue.chain)
+            partner_resname = str(partner_residue.name).strip().upper()
+            partner_resnum = int(partner_residue.resSeq)
+            partner_label = _res_label(partner_chain, partner_resname, partner_resnum)
+            candidates: List[Dict[str, object]] = []
+            for central_index in group_atom_indices:
+                central_atom = top.atom(central_index)
+                for partner_atom in partner_residue.atoms:
+                    if partner_atom.element is None or str(partner_atom.element.symbol).upper() == "H":
+                        continue
+                    distance_A = float(
+                        np.linalg.norm(xyz_nm[central_index] - xyz_nm[partner_atom.index]) * 10.0
+                    )
+                    if distance_A > float(neighbors_cutoff_A):
+                        continue
+                    interaction_type = classify_interaction(
+                        resname,
+                        partner_resname,
+                        central_atom.name,
+                        partner_atom.name,
+                        distance_A,
+                        central_is_donor=_donor_atom(central_atom),
+                        central_is_acceptor=_acceptor_atom(central_atom),
+                        partner_is_donor=_donor_atom(partner_atom),
+                        partner_is_acceptor=_acceptor_atom(partner_atom),
+                    )
+                    candidates.append(
+                        {
+                            "partner": partner_label,
+                            "partner_chain": partner_chain,
+                            "partner_resname": partner_resname,
+                            "partner_resnum": partner_resnum,
+                            "central_atom": central_atom.name,
+                            "partner_atom": partner_atom.name,
+                            "distance_A": round(distance_A, 2),
+                            "type": interaction_type,
+                        }
+                    )
+            if not candidates:
+                continue
+            candidates.sort(key=lambda item: float(item["distance_A"]))
+            shortest_by_type: Dict[str, Dict[str, object]] = {}
+            for item in candidates:
+                interaction_type = str(item["type"])
+                if interaction_type not in shortest_by_type:
+                    shortest_by_type[interaction_type] = item
+            informative_types = (
+                "disulfide",
+                "salt_bridge",
+                "potential_hbond",
+                "hydrophobic_contact",
+            )
+            chosen = [shortest_by_type[kind] for kind in informative_types if kind in shortest_by_type]
+            if not chosen and "close_contact" in shortest_by_type:
+                chosen = [shortest_by_type["close_contact"]]
+            interaction_records.extend(chosen)
 
         rows.append(
             {
@@ -369,11 +485,15 @@ def compute_environment_features(
                 "HBond_shell_acceptors_count": int(len(acceptors_shell)),
                 "HBond_shell_donors": ", ".join(donors_shell),
                 "HBond_shell_acceptors": ", ".join(acceptors_shell),
+                **histidine_context,
+                "Interaction_diagram_json": json.dumps(interaction_records, separators=(",", ":")),
                 "z_CA_A": z_val_A,
-                "In_membrane_slab": bool(in_mem),
+                "Ionizable_group_atoms": group_atoms_used,
+                "Ionizable_group_x_A": float(group_xyz_nm[0] * 10.0),
+                "Ionizable_group_y_A": float(group_xyz_nm[1] * 10.0),
+                "Ionizable_group_z_A": group_z_A,
+                "In_membrane_slab": False,
                 "OPM_id": opm_id or "",
-                "OPM_zmin_A": float(opm_zmin_A) if opm_zmin_A is not None else np.nan,
-                "OPM_zmax_A": float(opm_zmax_A) if opm_zmax_A is not None else np.nan,
                 "Disulfide_bridge": bool(ss_by_res_index.get(res.index, False)),
                 "Disulfide_partner": str(ss_partner_by_res_index.get(res.index, "")),
             }
@@ -389,8 +509,8 @@ def compute_environment_features(
 
     df["Exposure"] = np.where(
         df["SASA_frac"] >= 0.66,
-        "solvent-exposed",
-        np.where(df["SASA_frac"] >= 0.33, "partially exposed", "buried"),
+        "SASA-exposed",
+        np.where(df["SASA_frac"] >= 0.33, "partially SASA-exposed", "SASA-buried"),
     )
 
     pka_cols = ["propka_pKa", "pypka_pKa", "deepka_pKa", "Effective_pKa", "Average_pKa"]
