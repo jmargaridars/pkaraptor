@@ -25,16 +25,27 @@ def _norm_chain(chain: str | None) -> str:
     return str(chain).strip()
 
 
-def _parse_propka_file(text: str) -> Dict[Tuple[str, int], float]:
-    values: Dict[Tuple[str, int], list] = {}
+def _parse_propka_file(text: str) -> Dict[PkaKey, float]:
+    """
+    Parse residue-specific pKa values from the PROPKA
+    'SUMMARY OF THIS PREDICTION' section.
+    """
+    values: Dict[PkaKey, float] = {}
+    in_summary = False
 
     for line in text.splitlines():
-        line = line.strip()
-        if not line:
+        if "SUMMARY OF THIS PREDICTION" in line.upper():
+            in_summary = True
+            continue
+
+        if not in_summary:
             continue
 
         tokens = line.split()
-        if len(tokens) < 3:
+
+        # Expected summary format:
+        # GLU 375 A 5.40 4.50
+        if len(tokens) < 4:
             continue
 
         resname = tokens[0].upper()
@@ -43,24 +54,14 @@ def _parse_propka_file(text: str) -> Dict[Tuple[str, int], float]:
 
         try:
             resnum = int(tokens[1])
-        except ValueError:
+            chain = _norm_chain(tokens[2])
+            pka = float(tokens[3])
+        except (ValueError, IndexError):
             continue
 
-        numeric = []
-        for tok in tokens[2:]:
-            try:
-                numeric.append(float(tok))
-            except ValueError:
-                continue
+        values[(chain if chain else "*", resname, resnum)] = pka
 
-        if not numeric:
-            continue
-
-        pka = numeric[0]
-        key = (resname, resnum)
-        values.setdefault(key, []).append(pka)
-
-    return {k: float(np.mean(v)) for k, v in values.items()}
+    return values
 
 
 def run_propka(pdb_path: str) -> Dict[PkaKey, float]:
@@ -87,12 +88,7 @@ def run_propka(pdb_path: str) -> Dict[PkaKey, float]:
         )
 
     text = open(pka_file, "r", encoding="utf-8").read()
-    raw = _parse_propka_file(text)
-
-    out: Dict[PkaKey, float] = {}
-    for (rn, num), val in raw.items():
-        out[("*", rn, int(num))] = float(val)
-    return out
+    return _parse_propka_file(text)
 
 
 def parse_pypka_server_csv(path: str) -> Dict[PkaKey, float]:
