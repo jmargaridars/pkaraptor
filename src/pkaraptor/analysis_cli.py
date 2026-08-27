@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.opm_residues:
         legacy_res_set = parse_opm_residues(args.opm_residues)
 
-    pdb_for_env = str(args.opm_pdb) if args.opm_pdb else pdb_path
+    pdb_for_env = pdb_path
 
     env_df = compute_environment_features(
         pdb_for_env,
