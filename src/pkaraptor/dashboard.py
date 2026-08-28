@@ -358,16 +358,20 @@ def dataframe_to_js(df: pd.DataFrame, ph: float) -> tuple[str, str]:
         counts_methods_present[methods_present] += 1
 
         pka_spread = None
+        agree = None
+
         if len(numeric_vals) >= 2:
             pka_spread = float(max(numeric_vals) - min(numeric_vals))
 
-        if methods_present >= 2 and (pka_spread is None or pka_spread <= 1.0):
-            agree = "High"
-        elif methods_present >= 1 and (pka_spread is None or pka_spread <= 2.0):
-            agree = "Moderate"
-        else:
-            agree = "Low"
-        counts_agree[agree] += 1
+            if pka_spread <= 1.0:
+                agree = "High"
+            elif pka_spread <= 2.0:
+                agree = "Moderate"
+            else:
+                agree = "Low"
+
+        if agree is not None:
+            counts_agree[agree] += 1
 
         neighbor_count = _parse_neighbor_count(r.get("Neighbors_within_5A", ""))
 
@@ -706,6 +710,21 @@ body.theme-light .guide .small {{ color: rgba(30,41,59,0.75); }}
   height: 560px;
 }}
 #viewport {{ width: 100%; height: 100%; }}
+
+#atomHoverTooltip {{
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 100;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.25);
+}}
 .viewer-controls {{
   position: absolute;
   left: 12px;
@@ -1343,8 +1362,10 @@ body.theme-light .app-footer {{
           <div class="viewer-controls">
             <button class="viewer-btn" id="resetViewBtn" type="button">Reset view</button>
             <button class="viewer-btn" id="toggleDumBtn" type="button">PPM DUM: off</button>
+            <button class="viewer-btn" id="colorModeBtn" type="button">Coloring: Structure</button>
           </div>
           <div id="viewport"></div>
+          <div id="atomHoverTooltip"></div>
           <div id="infoBox"></div>
         </div>
       </div>
@@ -1353,10 +1374,28 @@ body.theme-light .app-footer {{
     <section class="card">
       <div class="card-header"><div class="card-title">Selected-residue titration curves</div></div>
       <div class="card-body">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+          <label for="comparisonPhSlider" style="font-size:0.78rem;">
+            Comparison pH:
+            <b id="comparisonPhValue">–</b>
+          </label>
+          <input id="comparisonPhSlider"
+                 type="range"
+                 min="0"
+                 max="14"
+                 step="0.1"
+                 style="width:260px;">
+          <button class="viewer-btn" id="resetComparisonPhBtn" type="button">
+            Reset to analysis pH
+          </button>
+          <span style="font-size:0.72rem;color:var(--text-muted);">
+            Analysis pH: <b id="analysisPhValue">–</b>
+          </span>
+        </div>
         <div class="plot-shell">
           <div id="titrationPlot" class="titration-empty">Select a residue in the table or 3D structure to display its titration curves.</div>
         </div>
-        <div class="titration-note">Curves show protonated fractions calculated from each available predicted pKa using the Henderson–Hasselbalch relationship. Methods are distinguished by colour, line style, and reference-pH marker shape. These are evidence visualizations and do not assign a residue state.</div>
+        <div class="titration-note">Curves show protonated fractions calculated from each available predicted pKa using the Henderson–Hasselbalch relationship. The comparison pH changes only the visual reference markers and does not modify the analysis pH, protonation-state assessment, or exported assignments.</div>
       </div>
     </section>
 
@@ -2437,8 +2476,9 @@ function badgeSS(text="SS") {{
 }}
 
 function passesAgreementFilter(r) {{
+  if (Number(r.methods_present || 0) < 2) return false;
   if (agreementFilter === "all") return true;
-  return (r.method_agreement || "Low") === agreementFilter;
+  return r.method_agreement === agreementFilter;
 }}
 
 function passesCoverageFilter(r) {{
@@ -2459,15 +2499,21 @@ function passesCoverageFilter(r) {{
 function renderDiagnostics() {{
   const filtered = getFilteredResidues();
 
+  // Method agreement is meaningful only when at least two
+  // numerical pKa predictions are available.
+  const agreementEligible = filtered.filter(
+    r => Number(r.methods_present || 0) >= 2
+  );
+
   let nHigh = 0, nMod = 0, nLow = 0;
   let spreads = [];
 
-  for (let i = 0; i < filtered.length; i++) {{
-    const r = filtered[i];
-    const cls = r.method_agreement || "Low";
+  for (let i = 0; i < agreementEligible.length; i++) {{
+    const r = agreementEligible[i];
+    const cls = r.method_agreement;
     if (cls === "High") nHigh++;
     else if (cls === "Moderate") nMod++;
-    else nLow++;
+    else if (cls === "Low") nLow++;
 
     if (r.pka_spread != null && !isNaN(r.pka_spread)) spreads.push(Number(r.pka_spread));
   }}
@@ -2481,7 +2527,7 @@ function renderDiagnostics() {{
 
   const agreeChips = document.getElementById("agreeChips");
   agreeChips.innerHTML = "";
-  agreeChips.appendChild(chip("All", filtered.length, {{
+  agreeChips.appendChild(chip("All", agreementEligible.length, {{
     clickable: true, active: agreementFilter === "all",
     onClick: function() {{ agreementFilter = "all"; renderDiagnostics(); renderAtypical(); renderDisulfides(); }}
   }}));
@@ -2503,6 +2549,7 @@ function renderDiagnostics() {{
   agreeBody.innerHTML = "";
   for (let i = 0; i < filtered.length; i++) {{
     const r = filtered[i];
+    if (Number(r.methods_present || 0) < 2) continue;
     if (!passesAgreementFilter(r)) continue;
 
     const tr = document.createElement("tr");
@@ -2616,6 +2663,10 @@ function renderAtypical() {{
   for (let i = 0; i < filtered.length; i++) {{
     const r = filtered[i];
     const rn = String(r.resname || "").toUpperCase();
+
+    // Exclude disulfide-bonded cysteines from intrinsic-pKa deviation analysis.
+    if (r.Disulfide_bridge && rn === "CYS") continue;
+
     if (!REF_PKA.hasOwnProperty(rn)) continue;
 
     const ref = REF_PKA[rn];
@@ -2700,17 +2751,86 @@ function parseDisulfidePartnerLabel(s) {{
 }}
 
 let comp = null;
+let cartoonRepr = null;
 let focusRepr = null;
 let neighborRepr = null;
+let structureColorMode = "structure";
 
 let dumRepr = null;
 let dumOn = false;
 let dumAvailable = false;
 let dumSele = null;
 
+const pkaraptorChainColorScheme = NGL.ColormakerRegistry.addScheme(function(params) {{
+  this.atomColor = function(atom) {{
+    const chain = String(atom.chainname || atom.chainid || "").trim();
+
+    if (chain === "A") return 0xff6a00;
+    if (chain === "B") return 0x00a63d;
+    if (chain === "C") return 0x8b20d4;
+
+    return 0x475569;
+  }};
+}}, "pKaRaptor chain colors");
+
 const stage = new NGL.Stage("viewport", {{
   backgroundColor: "#f1f5f9"
 }});
+// Keep NGL's native hover positioning, but use clean pKaRaptor labels.
+stage.signals.hovered.add(function(pickingProxy) {{
+  if (!pickingProxy) return;
+
+  window.requestAnimationFrame(function() {{
+    const tooltip = stage.tooltip;
+    if (!tooltip) return;
+
+    function atomLabel(atom) {{
+      if (!atom) return "";
+
+      const chain = String(atom.chainname || atom.chainid || "").trim();
+      const resname = String(atom.resname || "").trim();
+      const resno = atom.resno != null ? String(atom.resno) : "";
+      const atomname = String(atom.atomname || "").trim();
+
+      return (
+        (chain ? chain + ":" : "") +
+        resname +
+        resno +
+        (atomname ? " · " + atomname : "")
+      );
+    }}
+
+    if (pickingProxy.atom) {{
+      tooltip.textContent = "atom: " + atomLabel(pickingProxy.atom);
+      return;
+    }}
+
+    if (pickingProxy.bond) {{
+      const bond = pickingProxy.bond;
+      const a1 = bond.atom1;
+      const a2 = bond.atom2;
+
+      tooltip.textContent =
+        "bond: " +
+        atomLabel(a1) +
+        " — " +
+        atomLabel(a2);
+    }}
+  }});
+}});
+
+const colorModeBtn = document.getElementById("colorModeBtn");
+
+if (colorModeBtn) {{
+  colorModeBtn.addEventListener("click", function() {{
+    setStructureColorMode(
+      structureColorMode === "structure" ? "chain" : "structure"
+    );
+  }});
+}}
+
+updateStructureColorButton();
+
 window.addEventListener("resize", function() {{ stage.handleResize(); }}, false);
 
 function applyThemeToViewer() {{
@@ -2720,6 +2840,37 @@ function applyThemeToViewer() {{
   }} catch (e) {{
   }}
 }}
+
+function updateStructureColorButton() {{
+  const btn = document.getElementById("colorModeBtn");
+  if (!btn) return;
+
+  btn.textContent =
+    structureColorMode === "chain"
+      ? "Coloring: Chain"
+      : "Coloring: Structure";
+}}
+
+function setStructureColorMode(mode) {{
+  structureColorMode = mode === "chain" ? "chain" : "structure";
+
+  if (cartoonRepr) {{
+    if (structureColorMode === "chain") {{
+      cartoonRepr.setParameters({{
+        colorScheme: pkaraptorChainColorScheme
+      }});
+    }} else {{
+      cartoonRepr.setParameters({{
+        colorScheme: "uniform",
+        colorValue: 0x334155
+      }});
+    }}
+  }}
+
+  updateStructureColorButton();
+}}
+
+
 
 function safeAutoView(selection) {{
   if (!comp) return;
@@ -2813,7 +2964,8 @@ function buildDumSelectionByScan(o) {{
 stage.loadFile(new Blob([pdbText], {{ type: "text/plain" }}), {{ ext: "pdb" }}).then(function(o) {{
   comp = o;
 
-  o.addRepresentation("cartoon", {{
+  cartoonRepr = o.addRepresentation("cartoon", {{
+    colorScheme: "uniform",
     color: "#334155",
     opacity: 0.95,
     quality: "high",
@@ -2974,6 +3126,35 @@ function renderDisulfides() {{
   }}
 }}
 
+let comparisonPh = null;
+let currentTitrationResidue = null;
+
+setTimeout(function() {{
+  initializeComparisonPhControls();
+}}, 0);
+
+function getAnalysisPh() {{
+  return Number(summaryStats && summaryStats.ph != null ? summaryStats.ph : 7.0);
+}}
+
+function getComparisonPh() {{
+  return comparisonPh == null ? getAnalysisPh() : Number(comparisonPh);
+}}
+
+function updateComparisonPhControls() {{
+  const analysisPh = getAnalysisPh();
+
+  if (comparisonPh == null) comparisonPh = analysisPh;
+
+  const slider = document.getElementById("comparisonPhSlider");
+  const value = document.getElementById("comparisonPhValue");
+  const analysisValue = document.getElementById("analysisPhValue");
+
+  if (slider) slider.value = String(comparisonPh);
+  if (value) value.textContent = Number(comparisonPh).toFixed(1);
+  if (analysisValue) analysisValue.textContent = analysisPh.toFixed(1);
+}}
+
 function showTitrationMessage(message) {{
   const plot = document.getElementById("titrationPlot");
   if (!plot) return;
@@ -2982,7 +3163,39 @@ function showTitrationMessage(message) {{
   plot.textContent = message;
 }}
 
+function initializeComparisonPhControls() {{
+  updateComparisonPhControls();
+
+  const slider = document.getElementById("comparisonPhSlider");
+  const resetBtn = document.getElementById("resetComparisonPhBtn");
+
+  if (slider) {{
+    slider.addEventListener("input", function() {{
+      comparisonPh = Number(slider.value);
+      updateComparisonPhControls();
+
+      if (currentTitrationResidue) {{
+        renderTitrationPlot(currentTitrationResidue);
+      }}
+    }});
+  }}
+
+  if (resetBtn) {{
+    resetBtn.addEventListener("click", function() {{
+      comparisonPh = getAnalysisPh();
+      updateComparisonPhControls();
+
+      if (currentTitrationResidue) {{
+        renderTitrationPlot(currentTitrationResidue);
+      }}
+    }});
+  }}
+}}
+
 function renderTitrationPlot(r) {{
+  currentTitrationResidue = r;
+  updateComparisonPhControls();
+
   const plot = document.getElementById("titrationPlot");
   if (!plot) return;
   if (!r) {{
@@ -3009,7 +3222,7 @@ function renderTitrationPlot(r) {{
 
   const phValues = [];
   for (let i = 0; i <= 140; i++) phValues.push(i / 10);
-  const referencePh = Number(summaryStats && summaryStats.ph != null ? summaryStats.ph : 7.0);
+  const referencePh = getComparisonPh();
   const traces = [];
   methodValues.forEach(function(method) {{
     const pka = Number(method.value);
@@ -3025,7 +3238,7 @@ function renderTitrationPlot(r) {{
       x:[referencePh], y:[referenceFraction], type:"scatter", mode:"markers", showlegend:false,
       marker:{{color:method.color, size:11, symbol:method.symbol, line:{{color:"#ffffff", width:1.5}}}},
       customdata:[pka],
-      hovertemplate:"<b>" + method.name + " at reference pH</b><br>pKa: %{{customdata:.2f}}<br>pH: %{{x:.2f}}<br>Protonated fraction: %{{y:.1%}}<extra></extra>"
+      hovertemplate:"<b>" + method.name + " at comparison pH</b><br>pKa: %{{customdata:.2f}}<br>pH: %{{x:.2f}}<br>Protonated fraction: %{{y:.1%}}<extra></extra>"
     }});
   }});
 
@@ -3047,7 +3260,7 @@ function renderTitrationPlot(r) {{
       {{type:"line",x0:referencePh,x1:referencePh,y0:0,y1:1,line:{{color:referenceColor,width:2,dash:"dashdot"}}}},
       {{type:"line",x0:0,x1:14,y0:0.5,y1:0.5,line:{{color:"#94a3b8",width:1,dash:"dot"}}}}
     ],
-    annotations:[{{x:referencePh,y:1,xref:"x",yref:"paper",text:"reference pH " + referencePh.toFixed(2),showarrow:false,yshift:12,font:{{color:referenceColor,size:11}}}}]
+    annotations:[{{x:referencePh,y:1,xref:"x",yref:"paper",text:"comparison pH " + referencePh.toFixed(2),showarrow:false,yshift:12,font:{{color:referenceColor,size:11}}}}]
   }}, {{responsive:true, displaylogo:false}});
 }}
 
